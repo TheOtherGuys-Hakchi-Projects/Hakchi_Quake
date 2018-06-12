@@ -34,7 +34,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 // plane_t structure
 // !!! if this is changed, it must be changed in model.h too !!!
-// !!! if the size of this is changed, the array lookup in SV_HullPointContents
+// !!! if the size of this is changed, the array lookup in Mod_HullPointContents
 //     must be changed too !!!
 #define pl_normal	0
 #define pl_dist		12
@@ -53,15 +53,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	hu_clip_maxs		28
 #define hu_size  		40
 
-// dnode_t structure
+// mclipnode_t structure
 // !!! if this is changed, it must be changed in bspfile.h too !!!
-#define	nd_planenum		0
-#define	nd_children		4
-#define	nd_mins			8
-#define	nd_maxs			20
-#define	nd_firstface		32
-#define	nd_numfaces		36
-#define nd_size			40
+#define cn_planenum		0
+#define cn_children		4
+#define cn_size			12
 
 // sfxcache_t structure
 // !!! if this is changed, it much be changed in sound.h too !!!

@@ -20,6 +20,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // r_sprite.c
 
 #include "console.h"
+#include "model.h"
 #include "quakedef.h"
 #include "r_local.h"
 #include "sys.h"
@@ -30,6 +31,30 @@ static int sprite_width, sprite_height;
 
 spritedesc_t r_spritedesc;
 
+int
+R_SpriteDataSize(int pixels)
+{
+    return pixels * r_pixbytes;
+}
+
+void
+R_SpriteDataStore(mspriteframe_t *frame, const char *modelname,
+		  int framenum, byte *pixels)
+{
+    int i, size;
+
+    size = frame->width * frame->height;
+    if (r_pixbytes == 1) {
+	memcpy(&frame->rdata[0], pixels, size);
+    } else if (r_pixbytes == 2) {
+	unsigned short *pixout = (unsigned short *)&frame->rdata[0];
+	for (i = 0; i < size; i++)
+	    pixout[i] = d_8to16table[pixels[i]];
+    } else {
+	Sys_Error("%s: driver set invalid r_pixbytes: %d", __func__,
+		  r_pixbytes);
+    }
+}
 
 /*
 ================
@@ -66,8 +91,8 @@ R_ClipSpriteFace(int nump, clipplane_t *pclipplane)
     float frac, clipdist, *pclipnormal;
     float *in, *instep, *outstep, *vert2;
 
-    clipdist = pclipplane->dist;
-    pclipnormal = pclipplane->normal;
+    clipdist = pclipplane->plane.dist;
+    pclipnormal = pclipplane->plane.normal;
 
 // calc dists
     if (clip_current) {
@@ -224,69 +249,22 @@ R_SetupAndDrawSprite()
     D_DrawSprite();
 }
 
-
-/*
-================
-R_GetSpriteframe
-================
-*/
-static mspriteframe_t *
-R_GetSpriteframe(msprite_t *psprite)
-{
-    mspritegroup_t *pspritegroup;
-    mspriteframe_t *pspriteframe;
-    int i, numframes, frame;
-    float *pintervals, fullinterval, targettime, time;
-
-    frame = currententity->frame;
-
-    if ((frame >= psprite->numframes) || (frame < 0)) {
-	Con_Printf("R_DrawSprite: no such frame %d\n", frame);
-	frame = 0;
-    }
-
-    if (psprite->frames[frame].type == SPR_SINGLE) {
-	pspriteframe = psprite->frames[frame].frameptr;
-    } else {
-	pspritegroup = (mspritegroup_t *)psprite->frames[frame].frameptr;
-	pintervals = pspritegroup->intervals;
-	numframes = pspritegroup->numframes;
-	fullinterval = pintervals[numframes - 1];
-
-	time = cl.time + currententity->syncbase;
-
-	// when loading in Mod_LoadSpriteGroup, we guaranteed all interval values
-	// are positive, so we don't have to worry about division by 0
-	targettime = time - ((int)(time / fullinterval)) * fullinterval;
-
-	for (i = 0; i < (numframes - 1); i++) {
-	    if (pintervals[i] > targettime)
-		break;
-	}
-
-	pspriteframe = pspritegroup->frames[i];
-    }
-
-    return pspriteframe;
-}
-
-
 /*
 ================
 R_DrawSprite
 ================
 */
 void
-R_DrawSprite(void)
+R_DrawSprite(const entity_t *e)
 {
     int i;
     msprite_t *psprite;
     vec3_t tvec;
     float dot, angle, sr, cr;
 
-    psprite = currententity->model->cache.data;
+    psprite = e->model->cache.data;
 
-    r_spritedesc.pspriteframe = R_GetSpriteframe(psprite);
+    r_spritedesc.pspriteframe = Mod_GetSpriteFrame(e, psprite, cl.time + e->syncbase);
 
     sprite_width = r_spritedesc.pspriteframe->width;
     sprite_height = r_spritedesc.pspriteframe->height;
@@ -356,13 +334,13 @@ R_DrawSprite(void)
 	//  r_spritedesc.vpn)
     } else if (psprite->type == SPR_ORIENTED) {
 	// generate the sprite's axes, according to the sprite's world orientation
-	AngleVectors(currententity->angles, r_spritedesc.vpn,
-		     r_spritedesc.vright, r_spritedesc.vup);
+	AngleVectors(e->angles, r_spritedesc.vpn, r_spritedesc.vright,
+		     r_spritedesc.vup);
     } else if (psprite->type == SPR_VP_PARALLEL_ORIENTED) {
 	// generate the sprite's axes, parallel to the viewplane, but rotated in
 	// that plane around the center according to the sprite entity's roll
 	// angle. So vpn stays the same, but vright and vup rotate
-	angle = currententity->angles[ROLL] * (M_PI * 2 / 360);
+	angle = e->angles[ROLL] * (M_PI * 2 / 360);
 	sr = sin(angle);
 	cr = cos(angle);
 

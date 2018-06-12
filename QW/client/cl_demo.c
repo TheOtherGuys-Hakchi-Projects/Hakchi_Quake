@@ -171,14 +171,14 @@ CL_GetDemoMessage(void)
 	    // rewind back to time
 	    fseek(cls.demofile, ftell(cls.demofile) - sizeof(demotime),
 		  SEEK_SET);
-	    return 0;		// allready read this frame's message
+	    return 0;		// already read this frame's message
 	}
 	if (!cls.td_starttime && cls.state == ca_active) {
 	    cls.td_starttime = Sys_DoubleTime();
 	    cls.td_startframe = host_framecount;
 	}
 	realtime = demotime;	// warp
-    } else if (!cl.paused && cls.state >= ca_onserver) {	// allways grab until fully connected
+    } else if (!cl.paused && cls.state >= ca_onserver) {	// always grab until fully connected
 	if (realtime + 1.0 < demotime) {
 	    // too far back
 	    realtime = demotime - 1.0;
@@ -221,7 +221,7 @@ CL_GetDemoMessage(void)
 	cl.frames[i].receivedtime = -1;	// we haven't gotten a reply yet
 	cls.netchan.outgoing_sequence++;
 	for (i = 0; i < 3; i++) {
-	    r = fread(&f, 4, 1, cls.demofile);
+	    fread(&f, 4, 1, cls.demofile);
 	    cl.viewangles[i] = LittleFloat(f);
 	}
 	break;
@@ -389,9 +389,9 @@ CL_Record_f(void)
     char name[MAX_OSPATH];
     sizebuf_t buf;
     byte buf_data[MAX_MSGLEN];
-    int n, i, j;
+    int n, i, j, length, err;
     char *s;
-    entity_t *ent;
+    const entity_t *ent;
     entity_state_t *es, blankes;
     player_info_t *player;
     int seq = 1;
@@ -410,13 +410,14 @@ CL_Record_f(void)
     if (cls.demorecording)
 	CL_Stop_f();
 
-    sprintf(name, "%s/%s", com_gamedir, Cmd_Argv(1));
+    length = snprintf(name, sizeof(name), "%s/%s", com_gamedir, Cmd_Argv(1));
+    err = COM_DefaultExtension(name, ".qwd", name, sizeof(name));
+    if (length >= sizeof(name) || err) {
+	Con_Printf("ERROR: couldn't open demo, filename too long.\n");
+	return;
+    }
 
-//
-// open the demo file
-//
-    COM_DefaultExtension(name, ".qwd");
-
+    /* open the demo file */
     cls.demofile = fopen(name, "wb");
     if (!cls.demofile) {
 	Con_Printf("ERROR: couldn't open.\n");
@@ -466,7 +467,7 @@ CL_Record_f(void)
 
     // send server info string
     MSG_WriteByte(&buf, svc_stufftext);
-    MSG_WriteString(&buf, va("fullserverinfo \"%s\"\n", cl.serverinfo));
+    MSG_WriteStringf(&buf, "fullserverinfo \"%s\"\n", cl.serverinfo);
 
     // flush packet
     CL_WriteRecordDemoMessage(&buf, seq++);
@@ -581,7 +582,7 @@ CL_Record_f(void)
     }
 
     MSG_WriteByte(&buf, svc_stufftext);
-    MSG_WriteString(&buf, va("cmd spawn %i 0\n", cl.servercount));
+    MSG_WriteStringf(&buf, "cmd spawn %i 0\n", cl.servercount);
 
     if (buf.cursize) {
 	CL_WriteRecordDemoMessage(&buf, seq++);
@@ -653,7 +654,7 @@ CL_Record_f(void)
     // get the client to check and download skins
     // when that is completed, a begin command will be issued
     MSG_WriteByte(&buf, svc_stufftext);
-    MSG_WriteString(&buf, va("skins\n"));
+    MSG_WriteString(&buf, "skins\n");
 
     CL_WriteRecordDemoMessage(&buf, seq++);
 
@@ -672,7 +673,7 @@ record <demoname>
 void
 CL_ReRecord_f(void)
 {
-    int c;
+    int c, length, err;
     char name[MAX_OSPATH];
 
     c = Cmd_Argc();
@@ -689,13 +690,14 @@ CL_ReRecord_f(void)
     if (cls.demorecording)
 	CL_Stop_f();
 
-    sprintf(name, "%s/%s", com_gamedir, Cmd_Argv(1));
+    length = snprintf(name, sizeof(name), "%s/%s", com_gamedir, Cmd_Argv(1));
+    err = COM_DefaultExtension(name, ".qwd", name, sizeof(name));
+    if (length >= sizeof(name) || err) {
+	Con_Printf("ERROR: open demo file, filename too long.\n");
+	return;
+    }
 
-//
-// open the demo file
-//
-    COM_DefaultExtension(name, ".qwd");
-
+    /* open the demo file */
     cls.demofile = fopen(name, "wb");
     if (!cls.demofile) {
 	Con_Printf("ERROR: couldn't open.\n");
@@ -720,7 +722,8 @@ play [demoname]
 void
 CL_PlayDemo_f(void)
 {
-    char name[256];
+    int err;
+    char name[MAX_QPATH];
 
     if (Cmd_Argc() != 2) {
 	Con_Printf("play <demoname> : plays a demo\n");
@@ -731,17 +734,19 @@ CL_PlayDemo_f(void)
 //
     CL_Disconnect();
 
-//
-// open the demo file
-//
-    strcpy(name, Cmd_Argv(1));
-    COM_DefaultExtension(name, ".qwd");
+    err = COM_DefaultExtension(Cmd_Argv(1), ".qwd", name, sizeof(name));
+    if (err) {
+	Con_Printf("ERROR: couldn't open demo, filename too long.\n");
+	cls.demonum = -1;	/* stop demo loop */
+	return;
+    }
 
+    /* open the demo file */
     Con_Printf("Playing demo from %s.\n", name);
     COM_FOpenFile(name, &cls.demofile);
     if (!cls.demofile) {
 	Con_Printf("ERROR: couldn't open.\n");
-	cls.demonum = -1;	// stop demo loop
+	cls.demonum = -1;	/* stop demo loop */
 	return;
     }
 

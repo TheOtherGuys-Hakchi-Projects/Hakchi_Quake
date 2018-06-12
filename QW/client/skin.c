@@ -28,11 +28,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 cvar_t baseskin = { "baseskin", "base" };
 cvar_t noskins = { "noskins", "0" };
 
-char allskins[128];
+static char allskins[128];
 
 #define	MAX_CACHED_SKINS		128
-skin_t skins[MAX_CACHED_SKINS];
-int numskins;
+static skin_t skins[MAX_CACHED_SKINS];
+static int numskins;
 
 /*
 ================
@@ -44,31 +44,28 @@ Skin_Find
 ================
 */
 void
-Skin_Find(player_info_t * sc)
+Skin_Find(player_info_t *player)
 {
     skin_t *skin;
     int i;
-    char name[128], *s;
+    char name[MAX_QPATH];
+    const char *skinname;
 
-    if (allskins[0])
-	strcpy(name, allskins);
-    else {
-	s = Info_ValueForKey(sc->userinfo, "skin");
-	if (s && s[0])
-	    strcpy(name, s);
-	else
-	    strcpy(name, baseskin.string);
+    skinname = allskins;
+    if (!skinname[0]) {
+	skinname = Info_ValueForKey(player->userinfo, "skin");
+	if (!skinname || !skinname[0])
+	    skinname = baseskin.string;
     }
+    if (strstr(skinname, "..") || skinname[0] == '.')
+	skinname = "base";
 
-    if (strstr(name, "..") || *name == '.')
-	strcpy(name, "base");
-
-    COM_StripExtension(name, name);
+    COM_StripExtension(skinname, name, sizeof(name));
 
     for (i = 0; i < numskins; i++) {
 	if (!strcmp(name, skins[i].name)) {
-	    sc->skin = &skins[i];
-	    Skin_Cache(sc->skin);
+	    player->skin = &skins[i];
+	    Skin_Cache(player->skin);
 	    return;
 	}
     }
@@ -79,11 +76,11 @@ Skin_Find(player_info_t * sc)
     }
 
     skin = &skins[numskins];
-    sc->skin = skin;
+    player->skin = skin;
     numskins++;
 
     memset(skin, 0, sizeof(*skin));
-    strncpy(skin->name, name, sizeof(skin->name) - 1);
+    snprintf(skin->name, sizeof(skin->name), "%s", name);
 }
 
 
@@ -97,9 +94,8 @@ Returns a pointer to the skin bitmap, or NULL to use the default
 byte *
 Skin_Cache(skin_t * skin)
 {
-    char name[1024];
-    byte *raw;
-    byte *out, *pix;
+    char name[MAX_QPATH];
+    byte *raw, *out, *pix;
     pcx_t *pcx;
     int x, y;
     int dataByte;
@@ -121,88 +117,72 @@ Skin_Cache(skin_t * skin)
 //
 // load the pic from disk
 //
-    sprintf(name, "skins/%s.pcx", skin->name);
-    raw = COM_LoadTempFile(name);
-    if (!raw) {
+    snprintf(name, sizeof(name), "skins/%s.pcx", skin->name);
+    pcx = COM_LoadTempFile(name);
+    if (!pcx) {
 	Con_Printf("Couldn't load skin %s\n", name);
-	sprintf(name, "skins/%s.pcx", baseskin.string);
-	raw = COM_LoadTempFile(name);
-	if (!raw) {
-	    skin->failedload = true;
-	    return NULL;
-	}
+	snprintf(name, sizeof(name), "skins/%s.pcx", baseskin.string);
+	pcx = COM_LoadTempFile(name);
+	if (!pcx)
+	    goto Fail;
     }
 //
 // parse the PCX file
 //
-    pcx = (pcx_t *) raw;
-    raw = &pcx->data;
-
     if (pcx->manufacturer != 0x0a
 	|| pcx->version != 5
 	|| pcx->encoding != 1
 	|| pcx->bits_per_pixel != 8 || pcx->xmax >= 320 || pcx->ymax >= 200) {
-	skin->failedload = true;
 	Con_Printf("Bad skin %s\n", name);
-	return NULL;
+	goto Fail;
     }
 
     out = Cache_Alloc(&skin->cache, 320 * 200, skin->name);
     if (!out)
 	Sys_Error("Skin_Cache: couldn't allocate");
 
+    raw = &pcx->data;
     pix = out;
     memset(out, 0, 320 * 200);
 
     for (y = 0; y < pcx->ymax; y++, pix += 320) {
 	for (x = 0; x <= pcx->xmax;) {
-	    if (raw - (byte *)pcx > com_filesize) {
-		Cache_Free(&skin->cache);
-		skin->failedload = true;
-		Con_Printf("Skin %s was malformed.  You should delete it.\n",
-			   name);
-		return NULL;
-	    }
+	    if (raw - (byte *)pcx > com_filesize)
+		goto Fail_Malformed;
+
 	    dataByte = *raw++;
 
 	    if ((dataByte & 0xC0) == 0xC0) {
 		runLength = dataByte & 0x3F;
-		if (raw - (byte *)pcx > com_filesize) {
-		    Cache_Free(&skin->cache);
-		    skin->failedload = true;
-		    Con_Printf
-			("Skin %s was malformed.  You should delete it.\n",
-			 name);
-		    return NULL;
-		}
+		if (raw - (byte *)pcx > com_filesize)
+		    goto Fail_Malformed;
+
 		dataByte = *raw++;
 	    } else
 		runLength = 1;
 
 	    // skin sanity check
-	    if (runLength + x > pcx->xmax + 2) {
-		Cache_Free(&skin->cache);
-		skin->failedload = true;
-		Con_Printf("Skin %s was malformed.  You should delete it.\n",
-			   name);
-		return NULL;
-	    }
+	    if (runLength + x > pcx->xmax + 2)
+		goto Fail_Malformed;
+
 	    while (runLength-- > 0)
 		pix[x++] = dataByte;
 	}
 
     }
 
-    if (raw - (byte *)pcx > com_filesize) {
-	Cache_Free(&skin->cache);
-	skin->failedload = true;
-	Con_Printf("Skin %s was malformed.  You should delete it.\n", name);
-	return NULL;
-    }
+    if (raw - (byte *)pcx > com_filesize)
+	goto Fail_Malformed;
 
     skin->failedload = false;
-
     return out;
+
+ Fail_Malformed:
+    Con_Printf("Skin %s was malformed.  You should delete it.\n", name);
+    Cache_Free(&skin->cache);
+ Fail:
+    skin->failedload = true;
+    return NULL;
 }
 
 
@@ -214,7 +194,7 @@ Skin_NextDownload
 void
 Skin_NextDownload(void)
 {
-    player_info_t *sc;
+    player_info_t *player;
     int i;
 
     if (cls.downloadnumber == 0)
@@ -222,13 +202,13 @@ Skin_NextDownload(void)
     cls.downloadtype = dl_skin;
 
     for (; cls.downloadnumber != MAX_CLIENTS; cls.downloadnumber++) {
-	sc = &cl.players[cls.downloadnumber];
-	if (!sc->name[0])
+	player = &cl.players[cls.downloadnumber];
+	if (!player->name[0])
 	    continue;
-	Skin_Find(sc);
+	Skin_Find(player);
 	if (noskins.value)
 	    continue;
-	if (!CL_CheckOrDownloadFile(va("skins/%s.pcx", sc->skin->name)))
+	if (!CL_CheckOrDownloadFile(va("skins/%s.pcx", player->skin->name)))
 	    return;		// started a download
     }
 
@@ -236,18 +216,18 @@ Skin_NextDownload(void)
 
     // now load them in for real
     for (i = 0; i < MAX_CLIENTS; i++) {
-	sc = &cl.players[i];
-	if (!sc->name[0])
+	player = &cl.players[i];
+	if (!player->name[0])
 	    continue;
-	Skin_Cache(sc->skin);
+	Skin_Cache(player->skin);
 #ifdef GLQUAKE
-	sc->skin = NULL;
+	player->skin = NULL;
 #endif
     }
 
     if (cls.state != ca_active) {	// get next signon phase
 	MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-	MSG_WriteString(&cls.netchan.message, va("begin %i", cl.servercount));
+	MSG_WriteStringf(&cls.netchan.message, "begin %i", cl.servercount);
 	Cache_Report();		// print remaining memory
     }
 }

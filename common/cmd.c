@@ -19,6 +19,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 // cmd.c -- Quake script command processing module
 
+#include <string.h>
+
 #include "client.h"
 #include "cmd.h"
 #include "common.h"
@@ -34,8 +36,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "protocol.h"
 #endif
 
-void Cmd_ForwardToServer(void);
-#if defined(QW_HACK) && !defined(SERVERONLY)
+#ifndef SERVERONLY
 static void Cmd_ForwardToServer_f(void);
 #endif
 
@@ -43,14 +44,14 @@ static void Cmd_ForwardToServer_f(void);
 
 typedef struct cmdalias_s {
     char name[MAX_ALIAS_NAME];
-    char *value;
+    const char *value;
     struct stree_node stree;
 } cmdalias_t;
 
 #define cmdalias_entry(ptr) container_of(ptr, struct cmdalias_s, stree)
 static DECLARE_STREE_ROOT(cmdalias_tree);
 
-qboolean cmd_wait;
+static qboolean cmd_wait;
 
 cvar_t cl_warncmd = { "cl_warncmd", "0" };
 
@@ -111,14 +112,22 @@ Adds command text at the end of the buffer
 ============
 */
 void
-Cbuf_AddText(const char *text)
+Cbuf_AddText(const char *fmt, ...)
 {
-    int l = strlen(text);
+    va_list ap;
+    int len, maxlen;
+    char *buf;
 
-    if (cmd_text.cursize + l < cmd_text.maxsize)
-	SZ_Write(&cmd_text, text, l);
+    buf = (char *)cmd_text.data + cmd_text.cursize;
+    maxlen = cmd_text.maxsize - cmd_text.cursize;
+    va_start(ap, fmt);
+    len = vsnprintf(buf, maxlen, fmt, ap);
+    va_end(ap);
+
+    if (cmd_text.cursize + len < cmd_text.maxsize)
+	cmd_text.cursize += len;
     else
-	Con_Printf("Cbuf_AddText: overflow\n");
+	Con_Printf("%s: overflow\n", __func__);
 }
 
 
@@ -126,34 +135,27 @@ Cbuf_AddText(const char *text)
 ============
 Cbuf_InsertText
 
-Adds command text immediately after the current command
-Adds a \n to the text
-FIXME: actually change the command buffer to do less copying
+Adds command text immediately after the current command (i.e. at the start
+of the command buffer). Adds a \n to the text.
 ============
 */
 void
-Cbuf_InsertText(char *text)
+Cbuf_InsertText(const char *text)
 {
-    char *temp;
-    int templen;
+    int len;
 
-// copy off any commands still remaining in the exec buffer
-    templen = cmd_text.cursize;
-    if (templen) {
-	temp = Z_Malloc(templen);
-	memcpy(temp, cmd_text.data, templen);
-	SZ_Clear(&cmd_text);
-    } else
-	temp = NULL;		// shut up compiler
+    len = strlen(text);
+    if (cmd_text.cursize) {
+	if (cmd_text.cursize + len + 1 > cmd_text.maxsize)
+	    Sys_Error("%s: overflow", __func__);
 
-// add the entire text of the file
-    Cbuf_AddText(text);
-    SZ_Write(&cmd_text, "\n", 1);
-
-// add the copied off data
-    if (templen) {
-	SZ_Write(&cmd_text, temp, templen);
-	Z_Free(temp);
+	/* move any commands still remaining in the exec buffer */
+	memmove(cmd_text.data + len + 1, cmd_text.data, cmd_text.cursize);
+	memcpy(cmd_text.data, text, len);
+	cmd_text.data[len] = '\n';
+	cmd_text.cursize += len + 1;
+    } else {
+	Cbuf_AddText("%s\n", text);
     }
 }
 
@@ -165,7 +167,7 @@ Cbuf_Execute
 void
 Cbuf_Execute(void)
 {
-    int i;
+    int len, maxlen;
     char *text;
     char line[1024];
     int quotes;
@@ -175,28 +177,33 @@ Cbuf_Execute(void)
 	text = (char *)cmd_text.data;
 
 	quotes = 0;
-	for (i = 0; i < cmd_text.cursize; i++) {
-	    if (text[i] == '"')
+	maxlen = qmin(cmd_text.cursize, (int)sizeof(line));
+	for (len = 0; len < maxlen; len++) {
+	    if (text[len] == '"')
 		quotes++;
-	    if (!(quotes & 1) && text[i] == ';')
+	    if (!(quotes & 1) && text[len] == ';')
 		break;		/* don't break if inside a quoted string */
-	    if (text[i] == '\n')
+	    if (text[len] == '\n')
 		break;
 	}
-	memcpy(line, text, i);
-	line[i] = 0;
+	if (len == sizeof(line)) {
+	    Con_Printf("%s: command truncated\n", __func__);
+	    len--;
+	}
+	memcpy(line, text, len);
+	line[len] = 0;
 
 	/*
 	 * delete the text from the command buffer and move remaining commands
 	 * down this is necessary because commands (exec, alias) can insert
 	 * data at the beginning of the text buffer
 	 */
-	if (i == cmd_text.cursize)
+	if (len == cmd_text.cursize)
 	    cmd_text.cursize = 0;
 	else {
-	    i++;
-	    cmd_text.cursize -= i;
-	    memmove(text, text + i, cmd_text.cursize);
+	    len++; /* skip the terminating character */
+	    cmd_text.cursize -= len;
+	    memmove(text, text + len, cmd_text.cursize);
 	}
 
 	/* execute the command line */
@@ -313,7 +320,7 @@ Cmd_Exec_f(void)
     }
     // FIXME: is this safe freeing the hunk here???
     mark = Hunk_LowMark();
-    f = (char *)COM_LoadHunkFile(Cmd_Argv(1));
+    f = COM_LoadHunkFile(Cmd_Argv(1));
     if (!f) {
 	Con_Printf("couldn't exec %s\n", Cmd_Argv(1));
 	return;
@@ -351,16 +358,6 @@ Creates a new command that executes a command string (possibly ; seperated)
 ===============
 */
 
-char *
-CopyString(char *in)
-{
-    char *out;
-
-    out = Z_Malloc(strlen(in) + 1);
-    strcpy(out, in);
-    return out;
-}
-
 static struct cmdalias_s *
 Cmd_Alias_Find(const char *name)
 {
@@ -380,7 +377,8 @@ Cmd_Alias_f(void)
     cmdalias_t *a;
     char cmd[1024];
     int i, c;
-    char *s;
+    const char *s;
+    char *newval;
     size_t cmd_len;
     struct stree_node *node;
 
@@ -430,7 +428,9 @@ Cmd_Alias_f(void)
     }
     strcat(cmd, "\n");
 
-    a->value = CopyString(cmd);
+    newval = Z_Malloc(strlen(cmd) + 1);
+    strcpy(newval, cmd);
+    a->value = newval;
 }
 
 /*
@@ -453,9 +453,9 @@ static DECLARE_STREE_ROOT(cmd_tree);
 
 #define	MAX_ARGS		80
 static int cmd_argc;
-static char *cmd_argv[MAX_ARGS];
-static char *cmd_null_string = "";
-static char *cmd_args = NULL;
+static const char *cmd_argv[MAX_ARGS];
+static const char *cmd_null_string = "";
+static const char *cmd_args = NULL;
 
 #ifdef NQ_HACK
 cmd_source_t cmd_source;
@@ -469,17 +469,12 @@ Cmd_Init
 void
 Cmd_Init(void)
 {
-//
-// register our commands
-//
     Cmd_AddCommand("stuffcmds", Cmd_StuffCmds_f);
     Cmd_AddCommand("exec", Cmd_Exec_f);
     Cmd_AddCommand("echo", Cmd_Echo_f);
     Cmd_AddCommand("alias", Cmd_Alias_f);
     Cmd_AddCommand("wait", Cmd_Wait_f);
-#ifdef NQ_HACK
-    Cmd_AddCommand("cmd", Cmd_ForwardToServer);
-#elif defined(QW_HACK) && !defined(SERVERONLY)
+#ifndef SERVERONLY
     Cmd_AddCommand("cmd", Cmd_ForwardToServer_f);
 #endif
 }
@@ -500,7 +495,7 @@ Cmd_Argc(void)
 Cmd_Argv
 ============
 */
-char *
+const char *
 Cmd_Argv(int arg)
 {
     if (arg >= cmd_argc)
@@ -515,7 +510,7 @@ Cmd_Args
 Returns a single string containing argv(1) to argv(argc()-1)
 ============
 */
-char *
+const char *
 Cmd_Args(void)
 {
     // FIXME - check necessary?
@@ -533,9 +528,10 @@ Parses the given string into command line tokens.
 ============
 */
 void
-Cmd_TokenizeString(char *text)
+Cmd_TokenizeString(const char *text)
 {
     int i;
+    char *arg;
 
 // clear the args from the last string
     for (i = 0; i < cmd_argc; i++)
@@ -566,12 +562,12 @@ Cmd_TokenizeString(char *text)
 	    return;
 
 	if (cmd_argc < MAX_ARGS) {
-	    cmd_argv[cmd_argc] = Z_Malloc(strlen(com_token) + 1);
-	    strcpy(cmd_argv[cmd_argc], com_token);
+	    arg = Z_Malloc(strlen(com_token) + 1);
+	    strcpy(arg, com_token);
+	    cmd_argv[cmd_argc] = arg;
 	    cmd_argc++;
 	}
     }
-
 }
 
 static struct cmd_function_s *
@@ -638,49 +634,17 @@ Cmd_Exists
 ============
 */
 qboolean
-Cmd_Exists(char *cmd_name)
+Cmd_Exists(const char *cmd_name)
 {
     return Cmd_FindCommand(cmd_name) != NULL;
 }
 
 qboolean
-Cmd_Alias_Exists(char *cmd_name)
+Cmd_Alias_Exists(const char *cmd_name)
 {
     return Cmd_Alias_Find(cmd_name) != NULL;
 }
 
-
-#ifdef NQ_HACK
-/*
-===================
-Cmd_ForwardToServer
-
-Sends the entire command line over to the server
-===================
-*/
-void
-Cmd_ForwardToServer(void)
-{
-    if (cls.state < ca_connected) {
-	Con_Printf("Can't \"%s\", not connected\n", Cmd_Argv(0));
-	return;
-    }
-
-    if (cls.demoplayback)
-	return;			// not really connected
-
-    MSG_WriteByte(&cls.message, clc_stringcmd);
-    if (strcasecmp(Cmd_Argv(0), "cmd") != 0) {
-	SZ_Print(&cls.message, Cmd_Argv(0));
-	SZ_Print(&cls.message, " ");
-    }
-    if (Cmd_Argc() > 1)
-	SZ_Print(&cls.message, Cmd_Args());
-    else
-	SZ_Print(&cls.message, "\n");
-}
-#endif
-#ifdef QW_HACK
 #ifndef SERVERONLY
 /*
 ===================
@@ -691,55 +655,78 @@ things like godmode, noclip, etc, are commands directed to the server,
 so when they are typed in at the console, they will need to be forwarded.
 ===================
 */
+static qboolean
+Cmd_ForwardCheckConnected(void)
+{
+    if (cls.state < ca_connected) {
+	Con_Printf("Can't \"%s\", not connected\n", Cmd_Argv(0));
+	return false;
+    }
+    if (cls.demoplayback)
+	return false;
+
+    return true;
+}
+
 void
 Cmd_ForwardToServer(void)
 {
-    if (cls.state == ca_disconnected) {
-	Con_Printf("Can't \"%s\", not connected\n", Cmd_Argv(0));
+    sizebuf_t *message;
+
+    if (!Cmd_ForwardCheckConnected())
 	return;
-    }
 
-    if (cls.demoplayback)
-	return;			// not really connected
-
-    MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-    SZ_Print(&cls.netchan.message, Cmd_Argv(0));
+#ifdef QW_HACK
+    message = &cls.netchan.message;
+#endif
+#ifdef NQ_HACK
+    message = &cls.message;
+#endif
+    MSG_WriteByte(message, clc_stringcmd);
+    SZ_Print(message, Cmd_Argv(0));
     if (Cmd_Argc() > 1) {
-	SZ_Print(&cls.netchan.message, " ");
-	SZ_Print(&cls.netchan.message, Cmd_Args());
+	SZ_Print(message, " ");
+	SZ_Print(message, Cmd_Args());
     }
 }
 
-// don't forward the first argument
+/*
+===================
+Cmd_ForwardToServer_f
+
+Sends the arguments as a command line to the server
+===================
+*/
 static void
 Cmd_ForwardToServer_f(void)
 {
-    if (cls.state == ca_disconnected) {
-	Con_Printf("Can't \"%s\", not connected\n", Cmd_Argv(0));
-	return;
-    }
+    sizebuf_t *message;
 
-    if (strcasecmp(Cmd_Argv(1), "snap") == 0) {
+    if (!Cmd_ForwardCheckConnected())
+	return;
+
+#ifdef QW_HACK
+    message = &cls.netchan.message;
+#endif
+#ifdef NQ_HACK
+    message = &cls.message;
+#endif
+
+    /*
+     * FIXME - hack for QW's snap command.
+     * Used to work during demo playback?
+     */
+    if (!strcasecmp(Cmd_Argv(1), "snap")) {
 	Cbuf_InsertText("snap\n");
 	return;
     }
 
-    if (cls.demoplayback)
-	return;			// not really connected
-
     if (Cmd_Argc() > 1) {
-	MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-	SZ_Print(&cls.netchan.message, Cmd_Args());
+	MSG_WriteByte(message, clc_stringcmd);
+	SZ_Print(message, Cmd_Args());
     }
 }
-#else
-void
-Cmd_ForwardToServer(void)
-{
-}
-#endif /* SERVERONLY */
-#endif /* QW_HACK */
-
+#endif /* !SERVERONLY */
 /*
 ============
 Cmd_ExecuteString
@@ -750,10 +737,10 @@ FIXME: lookupnoadd the token to speed search?
 */
 void
 #ifdef NQ_HACK
-Cmd_ExecuteString(char *text, cmd_source_t src)
+Cmd_ExecuteString(const char *text, cmd_source_t src)
 #endif
 #ifdef QW_HACK
-Cmd_ExecuteString(char *text)
+Cmd_ExecuteString(const char *text)
 #endif
 {
     cmd_function_t *cmd;
@@ -773,7 +760,7 @@ Cmd_ExecuteString(char *text)
     if (cmd) {
 	if (cmd->function)
 	    cmd->function();
-#ifdef QW_HACK
+#ifndef SERVERONLY
 	else
 	    Cmd_ForwardToServer();
 #endif
@@ -813,7 +800,7 @@ Cmd_ArgCompletions(const char *name, const char *buf)
  * Call the argument completion function for cmd "name".
  * Returned result should be Z_Free'd after use.
  */
-char *
+const char *
 Cmd_ArgComplete(const char *name, const char *buf)
 {
     char *result = NULL;
@@ -838,7 +825,7 @@ where the given parameter apears, or 0 if not present
 ================
 */
 int
-Cmd_CheckParm(char *parm)
+Cmd_CheckParm(const char *parm)
 {
     int i;
 
@@ -869,7 +856,7 @@ Cmd_CommandCompletions(const char *buf)
     return root;
 }
 
-char *
+const char *
 Cmd_CommandComplete(const char *buf)
 {
     struct stree_root *root;

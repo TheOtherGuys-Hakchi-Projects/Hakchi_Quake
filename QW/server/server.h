@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define SERVER_SERVER_H
 
 #include "bothdefs.h"
+#include "model.h"
 #include "net.h"
 #include "progs.h"
 
@@ -50,6 +51,7 @@ typedef struct {
 
     int lastcheck;		// used by PF_checkclient
     double lastchecktime;	// for monster ai
+    const mleaf_t *checkleaf;
 
     qboolean paused;		// are we paused?
 
@@ -59,18 +61,18 @@ typedef struct {
 
     char name[64];		// map name
     char modelname[MAX_QPATH];	// maps/<name>.bsp, for model_precache[0]
-    struct model_s *worldmodel;
-    char *model_precache[MAX_MODELS];	// NULL terminated
-    char *sound_precache[MAX_SOUNDS];	// NULL terminated
-    char *lightstyles[MAX_LIGHTSTYLES];
-    struct model_s *models[MAX_MODELS];
+    brushmodel_t *worldmodel;
+    const char *model_precache[MAX_MODELS];	// NULL terminated
+    const char *sound_precache[MAX_SOUNDS];	// NULL terminated
+    const char *lightstyles[MAX_LIGHTSTYLES];
+    model_t *models[MAX_MODELS];
 
     int num_edicts;		// increases towards MAX_EDICTS
     edict_t *edicts;		// can NOT be array indexed, because
     // edict_t is variable sized, but can
     // be used to reference the world ent
 
-    byte *pvs, *phs;		// fully expanded and decompressed
+    leafbits_t **pvs, **phs;	// fully expanded and decompressed
 
     // added to every client's unreliable buffer each frame, then cleared
     sizebuf_t datagram;
@@ -346,20 +348,26 @@ extern cvar_t allow_download_models;
 extern cvar_t allow_download_sounds;
 extern cvar_t allow_download_maps;
 
+extern cvar_t sv_highchars;
+extern cvar_t sv_phs;
+
 extern server_static_t svs;	// persistant server info
 extern server_t sv;		// local server
-
-extern client_t *host_client;
-
-extern edict_t *sv_player;
-
-extern char localmodels[MAX_MODELS][5];	// inline model names for precache
 
 extern char localinfo[MAX_LOCALINFO_STRING + 1];
 
 extern int host_hunklevel;
 extern FILE *sv_logfile;
 extern FILE *sv_fraglogfile;
+
+extern int sv_nailmodel;
+extern int sv_supernailmodel;
+extern int sv_playermodel;
+
+extern int fp_messages, fp_persecond, fp_secondsdead;
+extern char fp_msg[];
+
+extern int file_from_pak;
 
 //===========================================================
 
@@ -368,33 +376,30 @@ extern FILE *sv_fraglogfile;
 //
 void SV_Shutdown(void);
 void SV_Frame(float time);
-void SV_FinalMessage(char *message);
+void SV_FinalMessage(const char *message);
 void SV_DropClient(client_t *drop);
+void SV_FullClientUpdateToClient(client_t *client, client_t *cl);
 
 int SV_CalcPing(client_t *cl);
 void SV_FullClientUpdate(client_t *client, sizebuf_t *buf);
 
-int SV_ModelIndex(char *name);
+int SV_ModelIndex(const char *name);
 
 qboolean SV_CheckBottom(edict_t *ent);
 qboolean SV_movestep(edict_t *ent, vec3_t move, qboolean relink);
 
 void SV_WriteClientdataToMessage(client_t *client, sizebuf_t *msg);
 void SV_MoveToGoal(void);
-void SV_SaveSpawnparms(void);
-void SV_Physics_Client(edict_t *ent);
-void SV_ExecuteUserCommand(char *s);
 void SV_InitOperatorCommands(void);
 void SV_SendServerinfo(client_t *client);
+void SV_SendServerInfoChange(const char *key, const char *value);
 void SV_ExtractFromUserinfo(client_t *cl);
-
-void Master_Heartbeat(void);
-void Master_Packet(void);
 
 //
 // sv_init.c
 //
-void SV_SpawnServer(char *server);
+void SV_ModelInit(void);
+void SV_SpawnServer(const char *server);
 void SV_FlushSignon(void);
 
 
@@ -404,20 +409,25 @@ void SV_FlushSignon(void);
 qboolean SV_RunThink(edict_t *ent);
 void SV_ProgStartFrame(void);
 void SV_Physics(void);
-void SV_CheckVelocity(edict_t *ent);
-void SV_AddGravity(edict_t *ent, float scale);
-void SV_Physics_Toss(edict_t *ent);
 void SV_RunNewmis(void);
-void SV_Impact(edict_t *e1, edict_t *e2);
 void SV_SetMoveVars(void);
+
+//
+// svonly.c
+//
+typedef enum { RD_NONE, RD_CLIENT, RD_PACKET } redirect_t;
+void SV_BeginRedirect(redirect_t rd, client_t *client);
+void SV_EndRedirect(void);
 
 //
 // sv_send.c
 //
+extern redirect_t sv_redirected;
+
 void SV_SendClientMessages(void);
 
 void SV_Multicast(vec3_t origin, int to);
-void SV_StartSound(edict_t *entity, int channel, char *sample,
+void SV_StartSound(edict_t *entity, int channel, const char *sample,
 		   int volume, float attenuation);
 void SV_ClientPrintf(client_t *cl, int level, const char *fmt, ...)
     __attribute__((format(printf,3,4)));
@@ -434,19 +444,6 @@ void SV_FindModelNumbers(void);
 void SV_ExecuteClientMessage(client_t *cl);
 void SV_UserInit(void);
 void SV_TogglePause(const char *msg);
-
-
-//
-// svonly.c
-//
-typedef enum { RD_NONE, RD_CLIENT, RD_PACKET } redirect_t;
-void SV_BeginRedirect(redirect_t rd);
-void SV_EndRedirect(void);
-
-//
-// sv_ccmds.c
-//
-void SV_Status_f(void);
 
 //
 // sv_ents.c
@@ -468,7 +465,7 @@ void ClientReliableWrite_Float(client_t *cl, float f);
 void ClientReliableWrite_Coord(client_t *cl, float f);
 void ClientReliableWrite_Long(client_t *cl, int c);
 void ClientReliableWrite_Short(client_t *cl, int c);
-void ClientReliableWrite_String(client_t *cl, char *s);
+void ClientReliableWrite_String(client_t *cl, const char *s);
 void ClientReliableWrite_SZ(client_t *cl, void *data, int len);
 
 #endif /* SERVER_SERVER_H */

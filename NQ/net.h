@@ -22,20 +22,24 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define NET_H
 
 #include "common.h"
+#include "server.h"
 
 /* net.h -- quake's interface to the networking layer */
 
-struct qsockaddr {
-    short sa_family;
-    unsigned char sa_data[14];
-};
-
+typedef struct {
+    union {
+	byte b[4];
+	unsigned l;
+    } ip;
+    unsigned short port;
+    unsigned short pad;
+} netadr_t;
 
 #define	NET_NAMELEN		64
 
-#define NET_MAXMESSAGE		8192
+#define NET_MAXMESSAGE		MAX_MSGLEN
 #define NET_HEADERSIZE		(2 * sizeof(unsigned int))
-#define NET_DATAGRAMSIZE	(MAX_DATAGRAM + NET_HEADERSIZE)
+#define NET_MESSAGESIZE		(NET_MAXMESSAGE + NET_HEADERSIZE)
 
 // NetHeader flags
 #define NETFLAG_LENGTH_MASK	0x0000ffff
@@ -137,6 +141,7 @@ typedef struct qsocket_s {
     struct net_driver_s *driver;
     struct net_landriver_s *landriver;
     int socket;
+    int mtu;
     void *driverdata;
 
     unsigned int ackSequence;
@@ -150,7 +155,8 @@ typedef struct qsocket_s {
     int receiveMessageLength;
     byte receiveMessage[NET_MAXMESSAGE];
 
-    struct qsockaddr addr;
+    netadr_t addr;
+
     char address[NET_NAMELEN];
 
 } qsocket_t;
@@ -159,7 +165,7 @@ extern qsocket_t *net_activeSockets;
 extern qsocket_t *net_freeSockets;
 
 typedef struct net_landriver_s {
-    char *name;
+    const char *name;
     qboolean initialized;
     int controlSock;
     int (*Init)(void);
@@ -167,36 +173,30 @@ typedef struct net_landriver_s {
     void (*Listen)(qboolean state);
     int (*OpenSocket)(int port);
     int (*CloseSocket)(int socket);
-    int (*Connect)(int socket, struct qsockaddr *addr);
     int (*CheckNewConnections)(void);
-    int (*Read)(int socket, byte *buf, int len, struct qsockaddr *addr);
-    int (*Write)(int socket, byte *buf, int len, struct qsockaddr *addr);
-    int (*Broadcast)(int socket, byte *buf, int len);
-    char *(*AddrToString)(struct qsockaddr *addr);
-    int (*StringToAddr)(char *string, struct qsockaddr *addr);
-    int (*GetSocketAddr)(int socket, struct qsockaddr *addr);
-    int (*GetNameFromAddr)(struct qsockaddr *addr, char *name);
-    int (*GetAddrFromName)(char *name, struct qsockaddr *addr);
-    int (*AddrCompare)(struct qsockaddr *addr1, struct qsockaddr *addr2);
-    int (*GetSocketPort)(struct qsockaddr *addr);
-    int (*SetSocketPort)(struct qsockaddr *addr, int port);
+    int (*Read)(int socket, void *buf, int len, netadr_t *addr);
+    int (*Write)(int socket, const void *buf, int len, const netadr_t *addr);
+    int (*Broadcast)(int socket, const void *buf, int len);
+    int (*GetSocketAddr)(int socket, netadr_t *addr);
+    int (*GetNameFromAddr)(const netadr_t *addr, char *name);
+    int (*GetAddrFromName)(const char *name, netadr_t *addr);
+    int (*GetDefaultMTU)(void);
 } net_landriver_t;
 
-#define	MAX_NET_DRIVERS		8
 extern int net_numlandrivers;
-extern net_landriver_t net_landrivers[MAX_NET_DRIVERS];
+extern net_landriver_t net_landrivers[];
 
 typedef struct net_driver_s {
-    char *name;
+    const char *name;
     qboolean initialized;
     int (*Init)(void);
     void (*Listen)(qboolean state);
     void (*SearchForHosts)(qboolean xmit);
-    qsocket_t *(*Connect)(char *host);
+    qsocket_t *(*Connect)(const char *host);
     qsocket_t *(*CheckNewConnections)(void);
     int (*QGetMessage)(qsocket_t *sock);
-    int (*QSendMessage)(qsocket_t *sock, sizebuf_t *data);
-    int (*SendUnreliableMessage)(qsocket_t *sock, sizebuf_t *data);
+    int (*QSendMessage)(qsocket_t *sock, const sizebuf_t *data);
+    int (*SendUnreliableMessage)(qsocket_t *sock, const sizebuf_t *data);
     qboolean (*CanSendMessage)(qsocket_t *sock);
     qboolean (*CanSendUnreliableMessage)(qsocket_t *sock);
     void (*Close)(qsocket_t *sock);
@@ -205,7 +205,7 @@ typedef struct net_driver_s {
 } net_driver_t;
 
 extern int net_numdrivers;
-extern net_driver_t net_drivers[MAX_NET_DRIVERS];
+extern net_driver_t net_drivers[];
 
 extern int DEFAULTnet_hostport;
 extern int net_hostport;
@@ -222,6 +222,11 @@ qsocket_t *NET_NewQSocket(void);
 void NET_FreeQSocket(qsocket_t *);
 double SetNetTime(void);
 
+int NET_AddrCompare(const netadr_t *addr1, const netadr_t *addr2);
+int NET_GetSocketPort(const netadr_t *addr);
+int NET_SetSocketPort(netadr_t *addr, int port);
+int NET_PartialIPAddress(const char *in, const netadr_t *myaddr, netadr_t *addr);
+
 
 #define HOSTCACHESIZE	8
 
@@ -233,7 +238,7 @@ typedef struct {
     int maxusers;
     net_driver_t *driver;
     net_landriver_t *ldriver;
-    struct qsockaddr addr;
+    netadr_t addr;
 } hostcache_t;
 
 extern int hostCacheCount;
@@ -251,6 +256,8 @@ extern double net_time;
 extern sizebuf_t net_message;
 extern int net_activeconnections;
 
+const char *NET_AdrToString(const netadr_t *a);
+
 void NET_Init(void);
 void NET_Shutdown(void);
 
@@ -262,7 +269,7 @@ struct qsocket_s *NET_CheckNewConnections(void);
 /*
  * called by client to connect to a host.  Returns -1 if not able to
  */
-struct qsocket_s *NET_Connect(char *host);
+struct qsocket_s *NET_Connect(const char *host);
 
 /*
  * Returns true or false if the given qsocket can currently accept a message
@@ -285,13 +292,13 @@ int NET_GetMessage(struct qsocket_s *sock);
  * returns  1 if the message was sent properly
  * returns -1 if the connection died
  */
-int NET_SendMessage(struct qsocket_s *sock, sizebuf_t *data);
-int NET_SendUnreliableMessage(struct qsocket_s *sock, sizebuf_t *data);
+int NET_SendMessage(struct qsocket_s *sock, const sizebuf_t *data);
+int NET_SendUnreliableMessage(struct qsocket_s *sock, const sizebuf_t *data);
 
 /*
  * This is a reliable *blocking* send to all attached clients.
  */
-int NET_SendToAll(sizebuf_t *data, double blocktime);
+int NET_SendToAll(const sizebuf_t *data, double blocktime);
 
 /*
  * if a dead connection is returned by a get or send function, this function
@@ -323,5 +330,6 @@ extern qboolean slistSilent;
 extern qboolean slistLocal;
 
 void NET_Slist_f(void);
+void NET_Ban_f(client_t *client);
 
 #endif /* NET_H */

@@ -28,15 +28,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "common.h"
 #include "console.h"
 #include "input.h"
+#include "model.h"
 #include "quakedef.h"
 #include "sound.h"
 #include "sys.h"
-
-#ifdef GLQUAKE
-#include "gl_model.h"
-#else
-#include "model.h"
-#endif
 
 #ifdef NQ_HACK
 #include "host.h"
@@ -125,7 +120,8 @@ S_SoundInfo_f(void)
 	return;
     }
 
-    Con_Printf("%5d stereo\n", shm->channels - 1);
+    Con_Printf("%5d channels (%s)\n", shm->channels,
+	       shm->channels == 1 ? "mono" : "stereo");
     Con_Printf("%5d samples\n", shm->samples);
     Con_Printf("%5d samplepos\n", shm->samplepos);
     Con_Printf("%5d samplebits\n", shm->samplebits);
@@ -258,7 +254,7 @@ S_Shutdown(void)
  * ==================
  */
 static sfx_t *
-S_FindName(char *name)
+S_FindName(const char *name)
 {
     int i;
     sfx_t *sfx;
@@ -291,7 +287,7 @@ S_FindName(char *name)
  * ==================
  */
 void
-S_TouchSound(char *name)
+S_TouchSound(const char *name)
 {
     sfx_t *sfx;
 
@@ -308,7 +304,7 @@ S_TouchSound(char *name)
  * ==================
  */
 sfx_t *
-S_PrecacheSound(char *name)
+S_PrecacheSound(const char *name)
 {
     sfx_t *sfx;
 
@@ -344,7 +340,7 @@ SND_PickChannel(int entnum, int entchannel)
 	channel = &channels[i];
 	/*
 	 * - channel 0 never overrides
-	 * - allways override sound from same entity
+	 * - always override sound from same entity
 	 */
 	if (entchannel != 0 && channel->entnum == entnum &&
 	    (channel->entchannel == entchannel || entchannel == -1)) {
@@ -385,9 +381,8 @@ SND_Spatialize(channel_t *ch)
     vec_t dist;
     vec_t lscale, rscale, scale;
     vec3_t source_vec;
-    sfx_t *snd;
 
-    /* anything coming from the view entity will allways be full volume */
+    /* anything coming from the view entity will always be full volume */
 #ifdef NQ_HACK
     if (ch->entnum == cl.viewentity) {
 	ch->leftvol = ch->master_vol;
@@ -404,7 +399,6 @@ SND_Spatialize(channel_t *ch)
 #endif
 
     /* calculate stereo seperation and distance attenuation */
-    snd = ch->sfx;
     VectorSubtract(ch->origin, listener_origin, source_vec);
     dist = VectorNormalize(source_vec) * ch->dist_mult;
 
@@ -607,7 +601,7 @@ S_StaticSound(sfx_t *sfx, vec3_t origin, float vol, float attenuation)
 static void
 S_UpdateAmbientSounds(void)
 {
-    mleaf_t *l;
+    mleaf_t *leaf;
     float vol;
     int ambient_channel;
     channel_t *chan;
@@ -619,8 +613,8 @@ S_UpdateAmbientSounds(void)
     if (!cl.worldmodel)
 	return;
 
-    l = Mod_PointInLeaf(listener_origin, cl.worldmodel);
-    if (!l || !ambient_level.value) {
+    leaf = Mod_PointInLeaf(cl.worldmodel, listener_origin);
+    if (!leaf || !ambient_level.value) {
 	for (ambient_channel = 0; ambient_channel < NUM_AMBIENTS;
 	     ambient_channel++)
 	    channels[ambient_channel].sfx = NULL;
@@ -632,7 +626,7 @@ S_UpdateAmbientSounds(void)
 	chan = &channels[ambient_channel];
 	chan->sfx = ambient_sfx[ambient_channel];
 
-	vol = ambient_level.value * l->ambient_sound_level[ambient_channel];
+	vol = ambient_level.value * leaf->ambient_sound_level[ambient_channel];
 	if (vol < 8)
 	    vol = 0;
 
@@ -794,7 +788,8 @@ S_Update_(void)
 
     /* check to make sure that we haven't overshot */
     if (paintedtime < soundtime) {
-	/* Con_Printf ("S_Update_ : overflow\n"); */
+	/* FIXME - handle init & wrap properly and report actual overflow */
+	//Con_DPrintf("%s: overflow\n", __func__);
 	paintedtime = soundtime;
     }
     /* mix ahead of current position */
@@ -885,7 +880,7 @@ S_SoundList(void)
 
 
 void
-S_LocalSound(char *sound)
+S_LocalSound(const char *sound)
 {
     sfx_t *sfx;
 

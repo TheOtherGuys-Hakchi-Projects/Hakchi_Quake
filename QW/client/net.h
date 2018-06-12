@@ -30,7 +30,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	PORT_ANY	-1
 
 typedef struct {
-    byte ip[4];
+    union {
+	byte b[4];
+	unsigned l;
+    } ip;
     unsigned short port;
     unsigned short pad;
 } netadr_t;
@@ -50,9 +53,9 @@ void NET_SendPacket(int length, void *data, netadr_t to);
 
 qboolean NET_CompareAdr(netadr_t a, netadr_t b);
 qboolean NET_CompareBaseAdr(netadr_t a, netadr_t b);
-char *NET_AdrToString(netadr_t a);
-char *NET_BaseAdrToString(netadr_t a);
-qboolean NET_StringToAdr(char *s, netadr_t *a);
+const char *NET_AdrToString(netadr_t a);
+const char *NET_BaseAdrToString(netadr_t a);
+qboolean NET_StringToAdr(const char *s, netadr_t *a);
 
 /* ======================================================================== */
 

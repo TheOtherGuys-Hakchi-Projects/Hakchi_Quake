@@ -48,7 +48,8 @@ surf_t *surfaces, *surface_p, *surf_max;
 edge_t *newedges[MAXHEIGHT];
 edge_t *removeedges[MAXHEIGHT];
 
-espan_t *span_p, *max_span_p;
+espan_t *span_p;
+static espan_t *max_span_p;
 
 int r_currentkey;
 
@@ -73,42 +74,6 @@ void R_LeadingEdgeBackwards(edge_t *edge);
 void R_TrailingEdge(surf_t *surf, edge_t *edge);
 
 //=============================================================================
-
-/*
-==============
-R_DrawCulledPolys
-==============
-*/
-void
-R_DrawCulledPolys(void)
-{
-    surf_t *s;
-    msurface_t *pface;
-
-    currententity = &r_worldentity;
-    if (r_worldpolysbacktofront) {
-	for (s = surface_p - 1; s > &surfaces[1]; s--) {
-	    if (!s->spans)
-		continue;
-
-	    if (!(s->flags & SURF_DRAWBACKGROUND)) {
-		pface = (msurface_t *)s->data;
-		R_RenderPoly(pface, 15);
-	    }
-	}
-    } else {
-	for (s = &surfaces[1]; s < surface_p; s++) {
-	    if (!s->spans)
-		continue;
-
-	    if (!(s->flags & SURF_DRAWBACKGROUND)) {
-		pface = (msurface_t *)s->data;
-		R_RenderPoly(pface, 15);
-	    }
-	}
-    }
-}
-
 
 /*
 ==============
@@ -332,60 +297,61 @@ R_LeadingEdgeBackwards(edge_t *edge)
 // don't start a span if this is an inverted span, with the end
 // edge preceding the start edge (that is, we've already seen the
 // end edge)
-    if (++surf->spanstate == 1) {
-	surf2 = surfaces[1].next;
+    if (++surf->spanstate != 1)
+	return;
 
-	if (surf->key > surf2->key)
-	    goto newtop;
+    surf2 = surfaces[1].next;
 
+    if (surf->key > surf2->key)
+	goto newtop;
+
+    // if it's two surfaces on the same plane, the one that's already
+    // active is in front, so keep going unless it's a bmodel
+    if (surf->insubmodel && (surf->key == surf2->key)) {
+	// must be two bmodels in the same leaf; don't care, because they'll
+	// never be farthest anyway
+	goto newtop;
+    }
+
+ continue_search:
+
+    do {
+	surf2 = surf2->next;
+    } while (surf->key < surf2->key);
+
+    if (surf->key == surf2->key) {
 	// if it's two surfaces on the same plane, the one that's already
 	// active is in front, so keep going unless it's a bmodel
-	if (surf->insubmodel && (surf->key == surf2->key)) {
-	    // must be two bmodels in the same leaf; don't care, because they'll
-	    // never be farthest anyway
-	    goto newtop;
-	}
+	if (!surf->insubmodel)
+	    goto continue_search;
 
-      continue_search:
-
-	do {
-	    surf2 = surf2->next;
-	} while (surf->key < surf2->key);
-
-	if (surf->key == surf2->key) {
-	    // if it's two surfaces on the same plane, the one that's already
-	    // active is in front, so keep going unless it's a bmodel
-	    if (!surf->insubmodel)
-		goto continue_search;
-
-	    // must be two bmodels in the same leaf; don't care which is really
-	    // in front, because they'll never be farthest anyway
-	}
-
-	goto gotposition;
-
-      newtop:
-	// emit a span (obscures current top)
-	iu = edge->u >> 20;
-
-	if (iu > surf2->last_u) {
-	    span = span_p++;
-	    span->u = surf2->last_u;
-	    span->count = iu - span->u;
-	    span->v = current_iv;
-	    span->pnext = surf2->spans;
-	    surf2->spans = span;
-	}
-	// set last_u on the new span
-	surf->last_u = iu;
-
-      gotposition:
-	// insert before surf2
-	surf->next = surf2;
-	surf->prev = surf2->prev;
-	surf2->prev->next = surf;
-	surf2->prev = surf;
+	// must be two bmodels in the same leaf; don't care which is really
+	// in front, because they'll never be farthest anyway
     }
+
+    goto gotposition;
+
+ newtop:
+    // emit a span (obscures current top)
+    iu = edge->u >> 20;
+
+    if (iu > surf2->last_u) {
+	span = span_p++;
+	span->u = surf2->last_u;
+	span->count = iu - span->u;
+	span->v = current_iv;
+	span->pnext = surf2->spans;
+	surf2->spans = span;
+    }
+    // set last_u on the new span
+    surf->last_u = iu;
+
+ gotposition:
+    // insert before surf2
+    surf->next = surf2;
+    surf->prev = surf2->prev;
+    surf2->prev->next = surf;
+    surf2->prev = surf;
 }
 
 
@@ -403,28 +369,28 @@ R_TrailingEdge(surf_t *surf, edge_t *edge)
 // don't generate a span if this is an inverted span, with the end
 // edge preceding the start edge (that is, we haven't seen the
 // start edge yet)
-    if (--surf->spanstate == 0) {
-	if (surf->insubmodel)
-	    r_bmodelactive--;
+    if (--surf->spanstate != 0)
+	return;
 
-	if (surf == surfaces[1].next) {
-	    // emit a span (current top going away)
-	    iu = edge->u >> 20;
-	    if (iu > surf->last_u) {
-		span = span_p++;
-		span->u = surf->last_u;
-		span->count = iu - span->u;
-		span->v = current_iv;
-		span->pnext = surf->spans;
-		surf->spans = span;
-	    }
-	    // set last_u on the surface below
-	    surf->next->last_u = iu;
+    if (surf->insubmodel)
+	r_bmodelactive--;
+
+    if (surf == surfaces[1].next) {
+	// emit a span (current top going away)
+	iu = edge->u >> 20;
+	if (iu > surf->last_u) {
+	    span = span_p++;
+	    span->u = surf->last_u;
+	    span->count = iu - span->u;
+	    span->v = current_iv;
+	    span->pnext = surf->spans;
+	    surf->spans = span;
 	}
-
-	surf->prev->next = surf->next;
-	surf->next->prev = surf->prev;
+	// set last_u on the surface below
+	surf->next->last_u = iu;
     }
+    surf->prev->next = surf->next;
+    surf->next->prev = surf->prev;
 }
 
 
@@ -443,106 +409,103 @@ R_LeadingEdge(edge_t *edge)
     int iu;
     double fu, newzi, testzi, newzitop, newzibottom;
 
-    if (edge->surfs[1]) {
-	// it's adding a new surface in, so find the correct place
-	surf = &surfaces[edge->surfs[1]];
+    if (!edge->surfs[1])
+	return;
 
-	// don't start a span if this is an inverted span, with the end
-	// edge preceding the start edge (that is, we've already seen the
-	// end edge)
-	if (++surf->spanstate == 1) {
-	    if (surf->insubmodel)
-		r_bmodelactive++;
+    // it's adding a new surface in, so find the correct place
+    surf = &surfaces[edge->surfs[1]];
 
-	    surf2 = surfaces[1].next;
+    // don't start a span if this is an inverted span, with the end
+    // edge preceding the start edge (that is, we've already seen the
+    // end edge)
+    if (++surf->spanstate != 1)
+	return;
 
-	    if (surf->key < surf2->key)
-		goto newtop;
+    if (surf->insubmodel)
+	r_bmodelactive++;
 
-	    // if it's two surfaces on the same plane, the one that's already
-	    // active is in front, so keep going unless it's a bmodel
-	    if (surf->insubmodel && (surf->key == surf2->key)) {
-		// must be two bmodels in the same leaf; sort on 1/z
-		fu = (float)(edge->u - 0xFFFFF) * (1.0 / 0x100000);
-		newzi = surf->d_ziorigin + fv * surf->d_zistepv +
-		    fu * surf->d_zistepu;
-		newzibottom = newzi * 0.99;
+    surf2 = surfaces[1].next;
 
-		testzi = surf2->d_ziorigin + fv * surf2->d_zistepv +
-		    fu * surf2->d_zistepu;
+    if (surf->key < surf2->key)
+	goto newtop;
 
-		if (newzibottom >= testzi) {
-		    goto newtop;
-		}
+    // if it's two surfaces on the same plane, the one that's already
+    // active is in front, so keep going unless it's a bmodel
+    if (surf->insubmodel && (surf->key == surf2->key)) {
+	// must be two bmodels in the same leaf; sort on 1/z
+	fu = (float)(edge->u - 0xFFFFF) * (1.0 / 0x100000);
+	newzi = surf->d_ziorigin + fv * surf->d_zistepv + fu * surf->d_zistepu;
+	newzibottom = newzi * 0.99;
 
-		newzitop = newzi * 1.01;
-		if (newzitop >= testzi) {
-		    if (surf->d_zistepu >= surf2->d_zistepu) {
-			goto newtop;
-		    }
-		}
-	    }
+	testzi = surf2->d_ziorigin + fv * surf2->d_zistepv +
+	    fu * surf2->d_zistepu;
 
-	  continue_search:
+	if (newzibottom >= testzi)
+	    goto newtop;
 
-	    do {
-		surf2 = surf2->next;
-	    } while (surf->key > surf2->key);
-
-	    if (surf->key == surf2->key) {
-		// if it's two surfaces on the same plane, the one that's already
-		// active is in front, so keep going unless it's a bmodel
-		if (!surf->insubmodel)
-		    goto continue_search;
-
-		// must be two bmodels in the same leaf; sort on 1/z
-		fu = (float)(edge->u - 0xFFFFF) * (1.0 / 0x100000);
-		newzi = surf->d_ziorigin + fv * surf->d_zistepv +
-		    fu * surf->d_zistepu;
-		newzibottom = newzi * 0.99;
-
-		testzi = surf2->d_ziorigin + fv * surf2->d_zistepv +
-		    fu * surf2->d_zistepu;
-
-		if (newzibottom >= testzi) {
-		    goto gotposition;
-		}
-
-		newzitop = newzi * 1.01;
-		if (newzitop >= testzi) {
-		    if (surf->d_zistepu >= surf2->d_zistepu) {
-			goto gotposition;
-		    }
-		}
-
-		goto continue_search;
-	    }
-
-	    goto gotposition;
-
-	  newtop:
-	    // emit a span (obscures current top)
-	    iu = edge->u >> 20;
-
-	    if (iu > surf2->last_u) {
-		span = span_p++;
-		span->u = surf2->last_u;
-		span->count = iu - span->u;
-		span->v = current_iv;
-		span->pnext = surf2->spans;
-		surf2->spans = span;
-	    }
-	    // set last_u on the new span
-	    surf->last_u = iu;
-
-	  gotposition:
-	    // insert before surf2
-	    surf->next = surf2;
-	    surf->prev = surf2->prev;
-	    surf2->prev->next = surf;
-	    surf2->prev = surf;
-	}
+	newzitop = newzi * 1.01;
+	if (newzitop >= testzi && surf->d_zistepu >= surf2->d_zistepu)
+	    goto newtop;
     }
+
+ continue_search:
+
+    do {
+	surf2 = surf2->next;
+    } while (surf->key > surf2->key);
+
+    if (surf->key != surf2->key)
+	goto gotposition;
+
+    // if it's two surfaces on the same plane, the one that's already
+    // active is in front, so keep going unless it's a bmodel
+    if (!surf->insubmodel)
+	goto continue_search;
+
+    /*
+     * TODO - support clipping intersecting bmodels?
+     *
+     * Current edge code only supports "abutting" bmodels - if two non-world
+     * bmodels intersect, the surfaces will not be rendered correctly by the
+     * edge renderer.
+     */
+
+    // must be two bmodels in the same leaf; sort on 1/z
+    fu = (float)(edge->u - 0xFFFFF) * (1.0 / 0x100000);
+    newzi = surf->d_ziorigin + fv * surf->d_zistepv + fu * surf->d_zistepu;
+    newzibottom = newzi * 0.99;
+
+    testzi = surf2->d_ziorigin + fv * surf2->d_zistepv + fu * surf2->d_zistepu;
+    if (newzibottom >= testzi)
+	goto gotposition;
+
+    newzitop = newzi * 1.01;
+    if (newzitop >= testzi && surf->d_zistepu >= surf2->d_zistepu)
+	goto gotposition;
+
+    goto continue_search;
+
+ newtop:
+    // emit a span (obscures current top)
+    iu = edge->u >> 20;
+
+    if (iu > surf2->last_u) {
+	span = span_p++;
+	span->u = surf2->last_u;
+	span->count = iu - span->u;
+	span->v = current_iv;
+	span->pnext = surf2->spans;
+	surf2->spans = span;
+    }
+    // set last_u on the new span
+    surf->last_u = iu;
+
+ gotposition:
+    // insert before surf2
+    surf->next = surf2;
+    surf->prev = surf2->prev;
+    surf2->prev->next = surf;
+    surf2->prev = surf;
 }
 
 
@@ -629,12 +592,11 @@ void
 R_ScanEdges(void)
 {
     int iv, bottom;
-    byte basespans[MAXSPANS * sizeof(espan_t) + CACHE_SIZE];
+    espan_t basespans[CACHE_PAD_ARRAY(MAXSPANS, espan_t)];
     espan_t *basespan_p;
     surf_t *s;
 
-    basespan_p = (espan_t *)
-	((long)(basespans + CACHE_SIZE - 1) & ~(CACHE_SIZE - 1));
+    basespan_p = CACHE_ALIGN_PTR(basespans);
     max_span_p = &basespan_p[MAXSPANS - r_refdef.vrect.width];
 
     span_p = basespan_p;
@@ -663,7 +625,7 @@ R_ScanEdges(void)
     edge_aftertail.prev = &edge_tail;
 
 // FIXME: do we need this now that we clamp x in r_draw.c?
-    edge_sentinel.u = 2000 << 24;	// make sure nothing sorts past this
+    edge_sentinel.u = FIXED16_MAX;	// make sure nothing sorts past this
     edge_sentinel.prev = &edge_aftertail;
 
 //
@@ -694,11 +656,7 @@ R_ScanEdges(void)
 	    S_ExtraUpdate();	// don't let sound get messed up if going slow
 	    VID_LockBuffer();
 
-	    if (r_drawculledpolys) {
-		R_DrawCulledPolys();
-	    } else {
-		D_DrawSurfaces();
-	    }
+	    D_DrawSurfaces();
 
 	    // clear the surface span pointers
 	    for (s = &surfaces[1]; s < surface_p; s++)
@@ -728,8 +686,5 @@ R_ScanEdges(void)
     (*pdrawfunc) ();
 
 // draw whatever's left in the span list
-    if (r_drawculledpolys)
-	R_DrawCulledPolys();
-    else
-	D_DrawSurfaces();
+    D_DrawSurfaces();
 }

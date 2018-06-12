@@ -21,23 +21,18 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef CLIENT_BOTHDEFS_H
 #define CLIENT_BOTHDEFS_H
 
+#include <inttypes.h>
+
 // defs common to client and server
-
-#ifdef SERVERONLY		// no asm in dedicated server
-#undef USE_X86_ASM
-#endif
-
-/* UNALIGNED_OK - undef if unaligned accesses are not supported */
-#ifdef USE_X86_ASM
-#define UNALIGNED_OK
-#else
-#undef UNALIGNED_OK
-#endif
 
 // !!! if this is changed, it must be changed in d_ifacea.h too !!!
 #define CACHE_SIZE	32	// used to align key data structures
-
-#define UNUSED(x)	(x = x)	// for pesky compiler / lint warnings
+#define CACHE_PAD_ARRAY(elements, type)	\
+    ((elements) + ((CACHE_SIZE - 1) / sizeof(type)) + 1)
+#define CACHE_ALIGN_PTR(dst) ({						\
+	const uintptr_t p = (uintptr_t)&(dst)[0];			\
+	(typeof(&(dst)[0]))((p + CACHE_SIZE - 1) & ~(CACHE_SIZE - 1));	\
+})
 
 #define	MINIMUM_MEMORY	0x550000
 

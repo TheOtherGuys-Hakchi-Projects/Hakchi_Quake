@@ -22,8 +22,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include <float.h>
 
-#include "quakedef.h"
 #include "d_local.h"
+#include "quakedef.h"
+#include "render.h"
 
 static int sprite_height;
 static int minindex, maxindex;
@@ -415,7 +416,7 @@ D_DrawSprite(void)
 
     cachewidth = r_spritedesc.pspriteframe->width;
     sprite_height = r_spritedesc.pspriteframe->height;
-    cacheblock = (byte *)&r_spritedesc.pspriteframe->pixels[0];
+    cacheblock = (byte *)&r_spritedesc.pspriteframe->rdata[0];
 
 // copy the first vertex to the last vertex, so we don't have to deal with
 // wrapping

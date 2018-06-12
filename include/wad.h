@@ -42,8 +42,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 typedef struct {
     int width, height;
-    byte data[4];		// variably sized
-} qpic_t;
+    byte data[];
+} dpic8_t;
 
 typedef struct {
     char identification[4];	// should be WAD2 or 2DAW
@@ -51,6 +51,7 @@ typedef struct {
     int infotableofs;
 } wadinfo_t;
 
+#define LUMP_NAMELEN 16
 typedef struct {
     int filepos;
     int disksize;
@@ -58,19 +59,21 @@ typedef struct {
     char type;
     char compression;
     char pad1, pad2;
-    char name[16];		// must be null terminated
+    char name[LUMP_NAMELEN];	// must be null terminated
 } lumpinfo_t;
 
-extern int wad_numlumps;
-extern lumpinfo_t *wad_lumps;
-extern byte *wad_base;
+typedef struct {
+    int numlumps;
+    lumpinfo_t *lumps;
+    byte *base;
+} wad_t;
 
-void W_LoadWadFile(const char *filename);
+void W_LoadWadFile(wad_t *wad, const char *filename);
 void W_CleanupName(const char *in, char *out);
-lumpinfo_t *W_GetLumpinfo(const char *name);
-void *W_GetLumpName(const char *name);
-void *W_GetLumpNum(int num);
+lumpinfo_t *W_GetLumpinfo(wad_t *wad, const char *name);
+void *W_GetLumpName(wad_t *wad, const char *name);
+void *W_GetLumpNum(wad_t *wad, int num);
 
-void SwapPic(qpic_t *pic);
+void SwapDPic(dpic8_t *dpic);
 
 #endif /* WAD_H */

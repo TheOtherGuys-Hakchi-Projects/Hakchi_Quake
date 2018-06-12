@@ -19,25 +19,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 // cl_main.c  -- client main loop
 
-#include "quakedef.h"
-#include "host.h"
-#include "cvar.h"
 #include "client.h"
-#include "server.h"
-#include "sound.h"
+#include "cmd.h"
 #include "console.h"
+#include "cvar.h"
+#include "host.h"
+#include "input.h"
+#include "model.h"
 #include "net.h"
 #include "protocol.h"
-#include "screen.h"
-#include "cmd.h"
+#include "quakedef.h"
 #include "render.h"
-#include "input.h"
-
-#ifdef GLQUAKE
-# include "gl_model.h"
-#else
-# include "model.h"
-#endif
+#include "screen.h"
+#include "server.h"
+#include "sound.h"
 
 // we need to declare some mouse variables here, because the menu system
 // references them even when on a unix system.
@@ -58,6 +53,8 @@ cvar_t m_yaw = { "m_yaw", "0.022", true };
 cvar_t m_forward = { "m_forward", "1", true };
 cvar_t m_side = { "m_side", "0.8", true };
 
+cvar_t m_freelook = { "m_freelook", "0", true };
+
 
 client_static_t cls;
 client_state_t cl;
@@ -70,7 +67,35 @@ lightstyle_t cl_lightstyle[MAX_LIGHTSTYLES];
 dlight_t cl_dlights[MAX_DLIGHTS];
 
 int cl_numvisedicts;
-entity_t *cl_visedicts[MAX_VISEDICTS];
+entity_t cl_visedicts[MAX_VISEDICTS];
+
+/*
+ * FIXME - horribly hackish because we don't have a way to tell if the
+ *         entity is a player just by looking at it's properties/pointer.
+ *
+ * CL_PlayerEntity()
+ * Returns the player number if the entity is a player, 0 otherwise
+ */
+int
+CL_PlayerEntity(const entity_t *e)
+{
+    ptrdiff_t offset;
+    int i;
+
+    /* might be a pointer directly into cl_entities... */
+    offset =  e - cl_entities;
+    if (offset >= 1 && offset <= cl.maxclients)
+	return offset;
+
+    /* ...but if not, try to find a match */
+    for (i = 1; i <= cl.maxclients; i++) {
+	/* Compare just the top of the struct, up to the lerp info */
+	if (!memcmp(e, &cl_entities[i], offsetof(entity_t, previouspose)))
+	    return i;
+    }
+
+    return 0;
+}
 
 /*
 =====================
@@ -86,6 +111,8 @@ CL_ClearState(void)
     if (!sv.active)
 	Host_ClearMemory();
 
+    CL_ClearTEnts();
+
 // wipe the entire cl structure
     memset(&cl, 0, sizeof(cl));
 
@@ -96,8 +123,6 @@ CL_ClearState(void)
     memset(cl_entities, 0, sizeof(cl_entities));
     memset(cl_dlights, 0, sizeof(cl_dlights));
     memset(cl_lightstyle, 0, sizeof(cl_lightstyle));
-    memset(cl_temp_entities, 0, sizeof(cl_temp_entities));
-    memset(cl_beams, 0, sizeof(cl_beams));
 
 //
 // allocate the efrags and chain together into a free list
@@ -122,8 +147,10 @@ CL_Disconnect(void)
 // stop sounds (especially looping!)
     S_StopAllSounds(true);
 
-// bring the console down and fade the colors back to normal
-//      SCR_BringDownConsole ();
+    /* Clear up view, remove palette shift */
+    scr_centertime_off = 0;
+    cl.cshifts[0].percent = 0;
+    VID_SetPalette(host_basepal);
 
 // if running a local server, shut it down
     if (cls.demoplayback)
@@ -147,6 +174,7 @@ CL_Disconnect(void)
     cls.demoplayback = false;
     cls.timedemo = false;
     cls.signon = 0;
+    cl.intermission = 0; /* FIXME - for SCR_UpdateScreen */
 }
 
 void
@@ -168,7 +196,7 @@ Host should be either "local" or a net address to be passed on
 =====================
 */
 void
-CL_EstablishConnection(char *host)
+CL_EstablishConnection(const char *host)
 {
     if (cls.state == ca_dedicated)
 	return;
@@ -198,8 +226,6 @@ An svc_signonnum has been received, perform a client side setup
 void
 CL_SignonReply(void)
 {
-    char str[8192];
-
     Con_DPrintf("CL_SignonReply: %i\n", cls.signon);
 
     switch (cls.signon) {
@@ -210,16 +236,15 @@ CL_SignonReply(void)
 
     case 2:
 	MSG_WriteByte(&cls.message, clc_stringcmd);
-	MSG_WriteString(&cls.message, va("name \"%s\"\n", cl_name.string));
+	MSG_WriteStringf(&cls.message, "name \"%s\"\n", cl_name.string);
 
 	MSG_WriteByte(&cls.message, clc_stringcmd);
-	MSG_WriteString(&cls.message, va("color %i %i\n",
-					 ((int)cl_color.value) >> 4,
-					 ((int)cl_color.value) & 15));
+	MSG_WriteStringf(&cls.message, "color %i %i\n",
+			 ((int)cl_color.value) >> 4,
+			 ((int)cl_color.value) & 15);
 
 	MSG_WriteByte(&cls.message, clc_stringcmd);
-	sprintf(str, "spawn %s", cls.spawnparms);
-	MSG_WriteString(&cls.message, str);
+	MSG_WriteStringf(&cls.message, "spawn %s", cls.spawnparms);
 	break;
 
     case 3:
@@ -279,7 +304,7 @@ CL_PrintEntities_f
 void
 CL_PrintEntities_f(void)
 {
-    entity_t *ent;
+    const entity_t *ent;
     int i;
 
     for (i = 0, ent = cl_entities; i < cl.num_entities; i++, ent++) {
@@ -295,6 +320,58 @@ CL_PrintEntities_f(void)
     }
 }
 
+void
+CL_Name_f(void)
+{
+    char new_name[16];
+    const char *arg;
+
+    if (Cmd_Argc() == 1) {
+	Con_Printf("\"name\" is \"%s\"\n", cl_name.string);
+	return;
+    }
+    arg = (Cmd_Argc() == 2) ? Cmd_Argv(1) : Cmd_Args();
+    snprintf(new_name, sizeof(new_name), "%s", arg);
+    if (!strcmp(cl_name.string, new_name))
+	return;
+
+    Cvar_Set("_cl_name", new_name);
+    Cmd_ForwardToServer();
+}
+
+/*
+==================
+CL_Color_f
+==================
+*/
+static void
+CL_Color_f(void)
+{
+    int top, bottom;
+
+    if (Cmd_Argc() == 1) {
+	top = (int)cl_color.value >> 4;
+	bottom = (int)cl_color.value & 15;
+	Con_Printf("\"color\" is \"%i %i\"\n"
+		   "color <0-13> [0-13]\n", top, bottom);
+	return;
+    }
+
+    if (Cmd_Argc() == 2)
+	top = bottom = atoi(Cmd_Argv(1)) & 15;
+    else {
+	top = atoi(Cmd_Argv(1)) & 15;
+	bottom = atoi(Cmd_Argv(2)) & 15;
+    }
+    if (top > 13)
+	top = 13;
+    if (bottom > 13)
+	bottom = 13;
+
+    Cvar_SetValue("_cl_color", top * 16 + bottom);
+    if (cls.state >= ca_connected)
+	Cmd_ForwardToServer();
+}
 
 /*
 ===============
@@ -491,7 +568,7 @@ CL_RelinkEntities(void)
 	// interpolate the angles
 	for (j = 0; j < 3; j++) {
 	    d = cl.mviewangles[0][j] - cl.mviewangles[1][j];
-	    if (d > 180)
+	    if (d >= 180)
 		d -= 360;
 	    else if (d < -180)
 		d += 360;
@@ -511,35 +588,45 @@ CL_RelinkEntities(void)
 // if the object wasn't included in the last packet, remove it
 	if (ent->msgtime != cl.mtime[0]) {
 	    ent->model = NULL;
+	    /* Reset lerp info as well */
+	    ent->previousframe = 0;
+	    ent->currentframe = 0;
+	    ent->previousorigintime = 0;
+	    ent->currentorigintime = 0;
+	    ent->previousanglestime = 0;
+	    ent->currentanglestime = 0;
 	    continue;
 	}
 
 	VectorCopy(ent->origin, oldorg);
 
-	if (ent->forcelink) {	// the entity was not updated in the last message
-	    // so move to the final spot
+	if (ent->forcelink) {
+	    /*
+	     * the entity was not updated in the last message
+	     * so move to the final spot
+	     */
 	    VectorCopy(ent->msg_origins[0], ent->origin);
 	    VectorCopy(ent->msg_angles[0], ent->angles);
-	} else {		// if the delta is large, assume a teleport and don't lerp
+	} else {
 	    f = frac;
 	    for (j = 0; j < 3; j++) {
 		delta[j] = ent->msg_origins[0][j] - ent->msg_origins[1][j];
 		if (delta[j] > 100 || delta[j] < -100)
-		    f = 1;	// assume a teleportation, not a motion
+		    f = 1;	/* assume a teleport and don't lerp */
 	    }
 
-	    // interpolate the origin and angles
+	    /*
+	     * interpolate the origin and angles
+	     */
 	    for (j = 0; j < 3; j++) {
 		ent->origin[j] = ent->msg_origins[1][j] + f * delta[j];
-
 		d = ent->msg_angles[0][j] - ent->msg_angles[1][j];
-		if (d > 180)
+		if (d >= 180)
 		    d -= 360;
 		else if (d < -180)
 		    d += 360;
 		ent->angles[j] = ent->msg_angles[1][j] + f * d;
 	    }
-
 	}
 
 // rotate binary objects locally
@@ -627,11 +714,10 @@ CL_RelinkEntities(void)
 	    continue;
 
 	if (cl_numvisedicts < MAX_VISEDICTS) {
-	    cl_visedicts[cl_numvisedicts] = ent;
+	    cl_visedicts[cl_numvisedicts] = *ent;
 	    cl_numvisedicts++;
 	}
     }
-
 }
 
 
@@ -742,6 +828,7 @@ CL_Init(void)
     Cvar_RegisterVariable(&cl_yawspeed);
     Cvar_RegisterVariable(&cl_pitchspeed);
     Cvar_RegisterVariable(&cl_anglespeedkey);
+    Cvar_RegisterVariable(&cl_run);
     Cvar_RegisterVariable(&cl_shownet);
     Cvar_RegisterVariable(&cl_nolerp);
     Cvar_RegisterVariable(&lookspring);
@@ -753,7 +840,7 @@ CL_Init(void)
     Cvar_RegisterVariable(&m_forward);
     Cvar_RegisterVariable(&m_side);
 
-//      Cvar_RegisterVariable (&cl_autofire);
+    Cvar_RegisterVariable(&m_freelook);
 
     Cmd_AddCommand("entities", CL_PrintEntities_f);
     Cmd_AddCommand("disconnect", CL_Disconnect_f);
@@ -763,6 +850,23 @@ CL_Init(void)
     Cmd_SetCompletion("playdemo", CL_Demo_Arg_f);
     Cmd_AddCommand("timedemo", CL_TimeDemo_f);
     Cmd_SetCompletion("timedemo", CL_Demo_Arg_f);
-
     Cmd_AddCommand("mcache", Mod_Print);
+
+    Cmd_AddCommand("name", CL_Name_f);
+    Cmd_AddCommand("color", CL_Color_f);
+    Cmd_AddCommand("status", NULL);
+    Cmd_AddCommand("ping", NULL);
+    Cmd_AddCommand("say", NULL);
+    Cmd_AddCommand("say_team", NULL);
+    Cmd_AddCommand("tell", NULL);
+
+    Cmd_AddCommand("pause", NULL);
+    Cmd_AddCommand("kill", NULL);
+    Cmd_AddCommand("kick", NULL);
+
+    Cmd_AddCommand("god", NULL);
+    Cmd_AddCommand("fly", NULL);
+    Cmd_AddCommand("noclip", NULL);
+    Cmd_AddCommand("notarget", NULL);
+    Cmd_AddCommand("give", NULL);
 }

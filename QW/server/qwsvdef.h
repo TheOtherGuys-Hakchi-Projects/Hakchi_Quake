@@ -43,10 +43,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // available for the program to use
 
 typedef struct {
-    char *basedir;
-    char *cachedir;		// for development over ISDN lines
+    const char *basedir;
     int argc;
-    char **argv;
+    const char **argv;
     void *membase;
     int memsize;
 } quakeparms_t;
@@ -59,7 +58,6 @@ typedef struct {
 //
 extern quakeparms_t host_parms;
 
-extern cvar_t sys_nostdout;
 extern cvar_t developer;
 
 extern qboolean host_initialized;	// true if into command execution
@@ -68,7 +66,8 @@ extern double realtime;		// not bounded in any way, changed at
 
 										// start of every frame, never reset
 
-void SV_Error(char *error, ...) __attribute__((noreturn));
+void SV_Error(const char *fmt, ...)
+    __attribute__((noreturn, format(printf,1,2)));
 void SV_Init(quakeparms_t *parms);
 
 #endif /* SERVER_QWSVDEF_H */

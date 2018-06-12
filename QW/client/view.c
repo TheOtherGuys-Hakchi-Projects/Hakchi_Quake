@@ -27,17 +27,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "screen.h"
 #include "view.h"
 
-// FIXME - header hacks
-extern vrect_t scr_vrect;
-
 /*
  * The view is allowed to move slightly from it's true position for bobbing,
  * but if it exceeds 8 pixels linear distance (spherical, not box), the list
  * of entities sent from the server may not include everything in the pvs,
  * especially when crossing a water boudnary.
  */
-
-cvar_t lcd_x = { "lcd_x", "0" };	// FIXME: make this work sometime...
 
 cvar_t cl_rollspeed = { "cl_rollspeed", "200" };
 cvar_t cl_rollangle = { "cl_rollangle", "2.0" };
@@ -127,7 +122,7 @@ V_CalcBob(void)
     if (cl.spectator)
 	return 0;
 
-    if (onground == -1)
+    if (!view_message->onground)
 	return bob;		// just use old value
 
     bobtime += host_frametime;
@@ -203,7 +198,7 @@ V_DriftPitch(void)
 {
     float delta, move;
 
-    if (view_message->onground == -1 || cls.demoplayback) {
+    if (!view_message->onground || cls.demoplayback) {
 	cl.driftmove = 0;
 	cl.pitchvel = 0;
 	return;
@@ -216,9 +211,10 @@ V_DriftPitch(void)
 	else
 	    cl.driftmove += host_frametime;
 
-	if (cl.driftmove > v_centermove.value) {
-	    V_StartPitchDrift();
-	}
+	if (cl.driftmove > v_centermove.value)
+	    if (lookspring.value)
+		V_StartPitchDrift();
+
 	return;
     }
 
@@ -268,11 +264,10 @@ cvar_t v_gamma = { "gamma", "1", true };
 
 byte gammatable[256];		// palette is sent through this
 
-
 #ifdef	GLQUAKE
 unsigned short ramps[3][256];
 float v_blend[4];		// rgba 0.0 - 1.0
-#endif // GLQUAKE
+#endif
 
 void
 BuildGammaTable(float g)
@@ -475,7 +470,6 @@ V_CalcPowerupCshift(void)
 	cl.cshifts[CSHIFT_POWERUP].percent = 0;
 }
 
-
 /*
 =============
 V_CalcBlend
@@ -553,11 +547,6 @@ V_UpdatePalette(void)
     }
 }
 #else // !GLQUAKE
-/*
-=============
-V_UpdatePalette
-=============
-*/
 void
 V_UpdatePalette(void)
 {
@@ -624,7 +613,6 @@ V_UpdatePalette(void)
 
     VID_ShiftPalette(pal);
 }
-
 #endif // !GLQUAKE
 
 /*
@@ -639,7 +627,7 @@ float
 angledelta(float a)
 {
     a = anglemod(a);
-    if (a > 180)
+    if (a >= 180)
 	a -= 360;
     return a;
 }
@@ -795,7 +783,7 @@ V_CalcIntermissionRefdef(void)
     VectorCopy(cl.simangles, r_refdef.viewangles);
     view->model = NULL;
 
-// allways idle in intermission
+// always idle in intermission
     old = v_idlescale.value;
     v_idlescale.value = 1;
     V_AddIdle();
@@ -871,9 +859,9 @@ V_CalcRefdef(void)
 
 // fudge position around to keep amount of weapon visible
 // roughly equal with different FOV
-    if (scr_viewsize.value == 110)
+    if (scr_viewsize.value == 110 && cl_sbar.value)
 	view->origin[2] += 1;
-    else if (scr_viewsize.value == 100)
+    else if (scr_viewsize.value == 100 && cl_sbar.value)
 	view->origin[2] += 2;
     else if (scr_viewsize.value == 90)
 	view->origin[2] += 1;
@@ -891,7 +879,7 @@ V_CalcRefdef(void)
     r_refdef.viewangles[PITCH] += cl.punchangle;
 
 // smooth out stair step ups
-    if ((view_message->onground != -1) && (cl.simorg[2] - oldz > 0)) {
+    if (!view_message->onground && cl.simorg[2] - oldz > 0) {
 	float steptime;
 
 	steptime = host_frametime;
@@ -985,8 +973,8 @@ V_Init(void)
     Cvar_RegisterVariable(&v_contentblend);
 
     Cvar_RegisterVariable(&v_idlescale);
-    Cvar_RegisterVariable(&crosshaircolor);
     Cvar_RegisterVariable(&crosshair);
+    Cvar_RegisterVariable(&crosshaircolor);
     Cvar_RegisterVariable(&cl_crossx);
     Cvar_RegisterVariable(&cl_crossy);
 #ifdef GLQUAKE

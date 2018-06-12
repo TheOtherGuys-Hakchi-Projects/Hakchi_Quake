@@ -25,7 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
-net_driver_t net_drivers[MAX_NET_DRIVERS] = {
+net_driver_t net_drivers[] = {
     {
 	.name				= "Loopback",
 	.initialized			= false,
@@ -61,8 +61,7 @@ net_driver_t net_drivers[MAX_NET_DRIVERS] = {
 
 int net_numdrivers = 2;
 
-
-net_landriver_t net_landrivers[MAX_NET_DRIVERS] = {
+net_landriver_t net_landrivers[] = {
     {
 	.name			= "Winsock TCPIP",
 	.initialized		= false,
@@ -72,19 +71,14 @@ net_landriver_t net_landrivers[MAX_NET_DRIVERS] = {
 	.Listen			= WINS_Listen,
 	.OpenSocket		= WINS_OpenSocket,
 	.CloseSocket		= WINS_CloseSocket,
-	.Connect		= WINS_Connect,
 	.CheckNewConnections	= WINS_CheckNewConnections,
 	.Read			= WINS_Read,
 	.Write			= WINS_Write,
 	.Broadcast		= WINS_Broadcast,
-	.AddrToString		= WINS_AddrToString,
-	.StringToAddr		= WINS_StringToAddr,
 	.GetSocketAddr		= WINS_GetSocketAddr,
 	.GetNameFromAddr	= WINS_GetNameFromAddr,
 	.GetAddrFromName	= WINS_GetAddrFromName,
-	.AddrCompare		= WINS_AddrCompare,
-	.GetSocketPort		= WINS_GetSocketPort,
-	.SetSocketPort		= WINS_SetSocketPort
+	.GetDefaultMTU		= WINS_GetDefaultMTU
     }
 };
 

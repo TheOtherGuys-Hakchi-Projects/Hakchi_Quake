@@ -18,26 +18,29 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
+#include "client.h"
 #include "common.h"
 #include "console.h"
 #include "in_x11.h"
+#include "keys.h"
+#include "quakedef.h"
 #include "x11_core.h"
 #include "vid.h"
 #include "sys.h"
 
-#include <X11/extensions/xf86dga.h>
+#ifdef USE_XF86DGA
+#include <X11/extensions/Xxf86dga.h>
 
-// FIXME - make static when possible
-qboolean mouse_available = false;	// Mouse available for use
-
-static qboolean keyboard_grab_active = false;
-qboolean mouse_grab_active = false;
 static qboolean dga_available = false;
 qboolean dga_mouse_active = false;
+#endif
+
+static qboolean mouse_available = false;	// Mouse available for use
+static qboolean keyboard_grab_active = false;
+qboolean mouse_grab_active = false;
 
 int mouse_x, mouse_y;
-
-//static int old_mouse_x, old_mouse_y;
+static int old_mouse_x, old_mouse_y;
 
 static void
 windowed_mouse_f(struct cvar_s *var)
@@ -58,6 +61,7 @@ windowed_mouse_f(struct cvar_s *var)
 }
 
 
+#ifdef USE_XF86DGA
 static void
 IN_ActivateDGAMouse(void)
 {
@@ -89,14 +93,12 @@ in_dgamouse_f(struct cvar_s *var)
     }
 }
 
+cvar_t in_dgamouse = { "in_dgamouse", "1", false, false, 0, in_dgamouse_f };
+#endif /* USE_XF86DGA */
+
 cvar_t in_mouse = { "in_mouse", "1", false };
-cvar_t in_dgamouse = { "in_dgamouse", "1", false, false, 0,
-    in_dgamouse_f
-};
-cvar_t _windowed_mouse = { "_windowed_mouse", "0", true, false, 0,
-    windowed_mouse_f
-};
-cvar_t m_filter = { "m_filter", "0" };
+cvar_t _windowed_mouse = { "_windowed_mouse", "0", true, false, 0, windowed_mouse_f };
+static cvar_t m_filter = { "m_filter", "0" };
 
 static Cursor
 CreateNullCursor(void)
@@ -144,16 +146,19 @@ IN_GrabMouse(void)
 			   GrabModeAsync, x_win, None, CurrentTime);
 	if (err) {
 	    if (err == GrabNotViewable)
-		Sys_Error("%s: GrabNotViewable", __func__);
+		Con_DPrintf("%s: GrabNotViewable\n", __func__);
 	    if (err == AlreadyGrabbed)
-		Sys_Error("%s: AlreadyGrabbed", __func__);
+		Con_DPrintf("%s: AlreadyGrabbed\n", __func__);
 	    if (err == GrabFrozen)
-		Sys_Error("%s: GrabFrozen", __func__);
+		Con_DPrintf("%s: GrabFrozen\n", __func__);
 	    if (err == GrabInvalidTime)
-		Sys_Error("%s: GrabInvalidTime", __func__);
+		Con_DPrintf("%s: GrabInvalidTime\n", __func__);
+	    mouse_grab_active = true;
+	    return;
+	} else {
+	    mouse_grab_active = true;
 	}
-	mouse_grab_active = true;
-
+#ifdef USE_XF86DGA
 	// FIXME - need those cvar callbacks to fix changed values...
 	if (dga_available) {
 	    if (in_dgamouse.value)
@@ -161,6 +166,7 @@ IN_GrabMouse(void)
 	} else {
 	    in_dgamouse.value = 0;
 	}
+#endif
     } else {
 	Sys_Error("Bad grab?");
     }
@@ -175,9 +181,11 @@ IN_UngrabMouse(void)
 	mouse_grab_active = false;
     }
 
+#ifdef USE_XF86DGA
     if (dga_mouse_active) {
 	IN_DeactivateDGAMouse();
     }
+#endif
 }
 
 void
@@ -188,8 +196,11 @@ IN_GrabKeyboard(void)
 
 	err = XGrabKeyboard(x_disp, x_win, False,
 			    GrabModeAsync, GrabModeAsync, CurrentTime);
-	if (err)
-	    Sys_Error("Couldn't grab keyboard!");
+	if (err) {
+	    Con_DPrintf("%s: Couldn't grab keyboard!\n", __func__);
+	    keyboard_grab_active = true;
+	    return;
+	}
 
 	keyboard_grab_active = true;
     }
@@ -208,19 +219,21 @@ static void
 IN_InitCvars(void)
 {
     Cvar_RegisterVariable(&in_mouse);
-    Cvar_RegisterVariable(&in_dgamouse);
     Cvar_RegisterVariable(&m_filter);
     Cvar_RegisterVariable(&_windowed_mouse);
+#ifdef USE_XF86DGA
+    Cvar_RegisterVariable(&in_dgamouse);
+#endif
 }
 
 void
 IN_Init(void)
 {
+#ifdef USE_XF86DGA
     int MajorVersion, MinorVersion;
-
+#endif
     keyboard_grab_active = false;
     mouse_grab_active = false;
-    dga_mouse_active = false;
 
     // FIXME - do proper detection?
     //       - Also, look at other vid_*.c files for clues
@@ -229,6 +242,8 @@ IN_Init(void)
     if (x_disp == NULL)
 	Sys_Error("x_disp not initialised before input...");
 
+#ifdef USE_XF86DGA
+    dga_mouse_active = false;
     if (!XF86DGAQueryVersion(x_disp, &MajorVersion, &MinorVersion)) {
 	Con_Printf("Failed to detect XF86DGA Mouse\n");
 	in_dgamouse.value = 0;
@@ -236,6 +251,7 @@ IN_Init(void)
     } else {
 	dga_available = true;
     }
+#endif
 
     // Need to grab the input focus at startup, just in case...
     // FIXME - must be viewable or get BadMatch
@@ -259,9 +275,8 @@ IN_Shutdown(void)
     mouse_available = 0;
 }
 
-#if 0
-void
-IN_MouseMove (usercmd_t *cmd)
+static void
+IN_MouseMove(usercmd_t *cmd)
 {
     if (!mouse_available)
 	return;
@@ -277,15 +292,16 @@ IN_MouseMove (usercmd_t *cmd)
     mouse_y *= sensitivity.value;
 
     /* add mouse X/Y movement to cmd */
-    if ((in_strafe.state & 1) || (lookstrafe.value && (in_mlook.state & 1)))
+    if ((in_strafe.state & 1) || (lookstrafe.value && ((in_mlook.state & 1) ^ (int)m_freelook.value)))
 	cmd->sidemove += m_side.value * mouse_x;
     else
 	cl.viewangles[YAW] -= m_yaw.value * mouse_x;
 
-    if (in_mlook.state & 1)
-	V_StopPitchDrift ();
+    if ((in_mlook.state & 1) ^ (int)m_freelook.value)
+	if (mouse_x || mouse_y)
+	    V_StopPitchDrift ();
 
-    if ((in_mlook.state & 1) && !(in_strafe.state & 1)) {
+    if (((in_mlook.state & 1) ^ (int)m_freelook.value) && !(in_strafe.state & 1)) {
 	cl.viewangles[PITCH] += m_pitch.value * mouse_y;
 	if (cl.viewangles[PITCH] > 80)
 	    cl.viewangles[PITCH] = 80;
@@ -299,4 +315,31 @@ IN_MouseMove (usercmd_t *cmd)
     }
     mouse_x = mouse_y = 0;
 }
-#endif
+
+void
+IN_Move(usercmd_t *cmd)
+{
+    IN_MouseMove(cmd);
+}
+
+void
+IN_Commands(void)
+{
+    if (!mouse_available)
+	return;
+
+    // FIXME - Need this consistant, robust
+
+    // If we have the mouse, but are not in the game...
+    if (mouse_grab_active && key_dest != key_game && !VID_IsFullScreen()) {
+	IN_UngrabMouse();
+	IN_UngrabKeyboard();
+    }
+    // If we don't have the mouse, but we're in the game and we want it...
+    if (!mouse_grab_active && key_dest == key_game &&
+	(_windowed_mouse.value || VID_IsFullScreen())) {
+	IN_GrabKeyboard();
+	IN_GrabMouse();
+	IN_CenterMouse();
+    }
+}

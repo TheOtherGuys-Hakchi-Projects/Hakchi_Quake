@@ -35,7 +35,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifdef SERVERONLY
 #include "qwsvdef.h"
 #include "server.h"
-void SV_SendServerInfoChange(char *key, char *value);	// FIXME
 #else
 #ifdef QW_HACK
 #include "quakedef.h"
@@ -43,7 +42,7 @@ void SV_SendServerInfoChange(char *key, char *value);	// FIXME
 #endif
 #endif
 
-static char *cvar_null_string = "";
+static const char *cvar_null_string = "";
 
 #define cvar_entry(ptr) container_of(ptr, struct cvar_s, stree)
 DECLARE_STREE_ROOT(cvar_tree);
@@ -65,6 +64,43 @@ Cvar_FindVar(const char *var_name)
 
     return ret;
 }
+
+/*
+ * Return a string tree with all possible argument completions of the given
+ * buffer for the given cvar.
+ */
+struct stree_root *
+Cvar_ArgCompletions(const char *name, const char *buf)
+{
+    cvar_t *cvar;
+    struct stree_root *root = NULL;
+
+    cvar = Cvar_FindVar(name);
+    if (cvar && cvar->completion)
+	root = cvar->completion(buf);
+
+    return root;
+}
+
+/*
+ * Call the argument completion function for cvar "name".
+ * Returned result should be Z_Free'd after use.
+ */
+char *
+Cvar_ArgComplete(const char *name, const char *buf)
+{
+    char *result = NULL;
+    struct stree_root *root;
+
+    root = Cvar_ArgCompletions(name, buf);
+    if (root) {
+	result = STree_MaxMatch(root, buf);
+	Z_Free(root);
+    }
+
+    return result;
+}
+
 
 #ifdef NQ_HACK
 /*
@@ -98,7 +134,7 @@ Cvar_VariableValue
 ============
 */
 float
-Cvar_VariableValue(char *var_name)
+Cvar_VariableValue(const char *var_name)
 {
     cvar_t *var;
 
@@ -114,7 +150,7 @@ Cvar_VariableValue(char *var_name)
 Cvar_VariableString
 ============
 */
-char *
+const char *
 Cvar_VariableString(const char *var_name)
 {
     cvar_t *var;
@@ -132,9 +168,10 @@ Cvar_Set
 ============
 */
 void
-Cvar_Set(char *var_name, char *value)
+Cvar_Set(const char *var_name, const char *value)
 {
     cvar_t *var;
+    char *newstring;
     qboolean changed;
 
     var = Cvar_FindVar(var_name);
@@ -169,8 +206,8 @@ Cvar_Set(char *var_name, char *value)
 	Info_SetValueForKey(cls.userinfo, var_name, value, MAX_INFO_STRING);
 	if (cls.state >= ca_connected) {
 	    MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-	    SZ_Print(&cls.netchan.message,
-		     va("setinfo \"%s\" \"%s\"\n", var_name, value));
+	    MSG_WriteStringf(&cls.netchan.message, "setinfo \"%s\" \"%s\"\n",
+			     var_name, value);
 	}
     }
 #endif
@@ -178,8 +215,9 @@ Cvar_Set(char *var_name, char *value)
 
     Z_Free(var->string);	// free the old value string
 
-    var->string = Z_Malloc(strlen(value) + 1);
-    strcpy(var->string, value);
+    newstring = Z_Malloc(strlen(value) + 1);
+    strcpy(newstring, value);
+    var->string = newstring;
     var->value = Q_atof(var->string);
 
 #ifdef NQ_HACK
@@ -208,11 +246,11 @@ Cvar_SetValue
 ============
 */
 void
-Cvar_SetValue(char *var_name, float value)
+Cvar_SetValue(const char *var_name, float value)
 {
     char val[32];
 
-    sprintf(val, "%f", value);
+    snprintf(val, sizeof(val), "%f", value);
     Cvar_Set(var_name, val);
 }
 
@@ -230,9 +268,9 @@ Cvar_RegisterVariable(cvar_t *variable)
     char value[512];		// FIXME - magic numbers...
     float old_developer;
 
-    /* first check to see if it has allready been defined */
+    /* first check to see if it has already been defined */
     if (Cvar_FindVar(variable->name)) {
-	Con_Printf("Can't register variable %s, allready defined\n",
+	Con_Printf("Can't register variable %s, already defined\n",
 		   variable->name);
 	return;
     }

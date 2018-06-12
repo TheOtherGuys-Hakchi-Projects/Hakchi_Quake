@@ -25,33 +25,40 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "draw.h"
 #include "protocol.h"
 #include "quakedef.h"
+#include "qpic.h"
 #include "sbar.h"
 #include "screen.h"
 #include "vid.h"
 #include "wad.h"
 
-int sb_updates;			// if >= vid.numpages, no update needed
+/* if >= vid.numpages, no update needed */
+int sb_updates;
 
-#define STAT_MINUS		10	// num frame for '-' stats digit
-qpic_t *sb_nums[2][11];
-qpic_t *sb_colon, *sb_slash;
-qpic_t *sb_ibar;
-qpic_t *sb_sbar;
-qpic_t *sb_scorebar;
+/* num frame for '-' stats digit */
+#define STAT_MINUS 10
 
-qpic_t *sb_weapons[7][8];	// 0 is active, 1 is owned, 2-5 are flashes
-qpic_t *sb_ammo[4];
-qpic_t *sb_sigil[4];
-qpic_t *sb_armor[3];
-qpic_t *sb_items[32];
+const qpic8_t *sb_nums[2][11];
+const qpic8_t *sb_colon, *sb_slash;
+const qpic8_t *sb_ibar;
+const qpic8_t *sb_sbar;
+const qpic8_t *sb_scorebar;
 
-qpic_t *sb_faces[7][2];		// 0 is gibbed, 1 is dead, 2-6 are alive
+/* 0 is active, 1 is owned, 2-5 are flashes */
+const qpic8_t *sb_weapons[7][8];
 
-							// 0 is static, 1 is temporary animation
-qpic_t *sb_face_invis;
-qpic_t *sb_face_quad;
-qpic_t *sb_face_invuln;
-qpic_t *sb_face_invis_invuln;
+const qpic8_t *sb_ammo[4];
+const qpic8_t *sb_sigil[4];
+const qpic8_t *sb_armor[3];
+const qpic8_t *sb_items[32];
+
+/* [0][] is gibbed, [1][] is dead, [2-6][] are alive */
+/* [][0] is static, [][1] is temporary animation */
+const qpic8_t *sb_faces[7][2];
+
+const qpic8_t *sb_face_invis;
+const qpic8_t *sb_face_quad;
+const qpic8_t *sb_face_invuln;
+const qpic8_t *sb_face_invis_invuln;
 
 qboolean sb_showscores;
 qboolean sb_showteamscores;
@@ -243,7 +250,7 @@ Sbar_DrawPic
 =============
 */
 void
-Sbar_DrawPic(int x, int y, qpic_t *pic)
+Sbar_DrawPic(int x, int y, const qpic8_t *pic)
 {
     Draw_Pic(x /* + ((vid.width - 320)>>1) */ ,
 	     y + (vid.height - SBAR_HEIGHT), pic);
@@ -257,7 +264,7 @@ JACK: Draws a portion of the picture in the status bar.
 */
 
 void
-Sbar_DrawSubPic(int x, int y, qpic_t *pic, int srcx, int srcy, int width,
+Sbar_DrawSubPic(int x, int y, const qpic8_t *pic, int srcx, int srcy, int width,
 		int height)
 {
     Draw_SubPic(x, y + (vid.height - SBAR_HEIGHT), pic, srcx, srcy, width,
@@ -271,7 +278,7 @@ Sbar_DrawTransPic
 =============
 */
 void
-Sbar_DrawTransPic(int x, int y, qpic_t *pic)
+Sbar_DrawTransPic(int x, int y, const qpic8_t *pic)
 {
     Draw_TransPic(x /*+ ((vid.width - 320)>>1) */ ,
 		  y + (vid.height - SBAR_HEIGHT), pic);
@@ -296,8 +303,8 @@ Sbar_DrawCharacter(int x, int y, int num)
 Sbar_DrawString
 ================
 */
-void
-Sbar_DrawString(int x, int y, char *str)
+static void
+Sbar_DrawString(int x, int y, const char *str)
 {
     Draw_String(x /*+ ((vid.width - 320)>>1) */ ,
 		y + vid.height - SBAR_HEIGHT, str);
@@ -482,13 +489,13 @@ Sbar_SortTeams(void)
 	    }
 }
 
-int
+static int
 Sbar_ColorForMap(int m)
 {
-    m = (m < 0) ? 0 : ((m > 13) ? 13 : m);
+    m = qclamp(m, 0, 13) * 16;
 
-    m *= 16;
-    return m < 128 ? m + 8 : m + 8;
+    //return m < 128 ? m + 8 : m + 8;
+    return m + 8;
 }
 
 
@@ -540,9 +547,7 @@ Sbar_DrawInventory(void)
     for (i = 0; i < 7; i++) {
 	if (cl.stats[STAT_ITEMS] & (IT_SHOTGUN << i)) {
 	    time = cl.item_gettime[i];
-	    flashon = (int)((cl.time - time) * 10);
-	    if (flashon < 0)
-		flashon = 0;
+	    flashon = qmax((int)((cl.time - time) * 10), 0);
 	    if (flashon >= 10) {
 		if (cl.stats[STAT_ACTIVEWEAPON] == (IT_SHOTGUN << i))
 		    flashon = 1;
@@ -655,13 +660,8 @@ Sbar_DrawFrags(void)
 	    continue;
 
 	// draw background
-	top = s->topcolor;
-	bottom = s->bottomcolor;
-	top = (top < 0) ? 0 : ((top > 13) ? 13 : top);
-	bottom = (bottom < 0) ? 0 : ((bottom > 13) ? 13 : bottom);
-
-	top = Sbar_ColorForMap(top);
-	bottom = Sbar_ColorForMap(bottom);
+	top = Sbar_ColorForMap(s->topcolor);
+	bottom = Sbar_ColorForMap(s->bottomcolor);
 
 //              Draw_Fill (xofs + x*8 + 10, y, 28, 4, top);
 //              Draw_Fill (xofs + x*8 + 10, y+4, 28, 3, bottom);
@@ -910,8 +910,8 @@ added by Zoid
 void
 Sbar_TeamOverlay(void)
 {
-    qpic_t *pic;
-    int i, k, l;
+    const qpic8_t *pic;
+    int i, k;
     int x, y;
     char num[12];
     int teamplay;
@@ -946,8 +946,6 @@ Sbar_TeamOverlay(void)
     Sbar_SortTeams();
 
 // draw the text
-    l = scoreboardlines;
-
     for (i = 0; i < scoreboardteams && y <= vid.height - 10; i++) {
 	k = teamsort[i];
 	tm = teams + k;
@@ -1004,7 +1002,7 @@ ping time frags name
 void
 Sbar_DeathmatchOverlay(int start)
 {
-    qpic_t *pic;
+    const qpic8_t *pic;
     int i, k, l;
     int top, bottom;
     int x, y, f;
@@ -1024,7 +1022,7 @@ Sbar_DeathmatchOverlay(int start)
     if (realtime - cl.last_ping_request > 2) {
 	cl.last_ping_request = realtime;
 	MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-	SZ_Print(&cls.netchan.message, "pings");
+	MSG_WriteString(&cls.netchan.message, "pings");
     }
 
     teamplay = atoi(Info_ValueForKey(cl.serverinfo, "teamplay"));
@@ -1107,10 +1105,8 @@ Sbar_DeathmatchOverlay(int start)
 	Draw_String(x + 64, y, num);
 
 	// draw background
-	top = s->topcolor;
-	bottom = s->bottomcolor;
-	top = Sbar_ColorForMap(top);
-	bottom = Sbar_ColorForMap(bottom);
+	top = Sbar_ColorForMap(s->topcolor);
+	bottom = Sbar_ColorForMap(s->bottomcolor);
 
 	if (largegame)
 	    Draw_Fill(x + 104, y + 1, 40, 3, top);
@@ -1161,133 +1157,117 @@ displayed to right of status bar if there's room
 void
 Sbar_MiniDeathmatchOverlay(void)
 {
-    int i, k;
-    int top, bottom;
-    int x, y, f;
-    char num[12];
-    player_info_t *s;
+    int x, y, line, numlines, top, bottom;
     int teamplay;
-    char team[5];
-    int numlines;
-    char name[16 + 1];
-    team_t *tm;
 
+    /* Don't bother if not enough room */
     if (vid.width < 512 || !sb_lines)
-	return;			// not enuff room
+	return;
 
     teamplay = atoi(Info_ValueForKey(cl.serverinfo, "teamplay"));
 
     scr_copyeverything = 1;
     scr_fullupdate = 0;
 
-// scores
     Sbar_SortFrags(false);
     if (vid.width >= 640)
 	Sbar_SortTeams();
-
     if (!scoreboardlines)
-	return;			// no one there?
+	return;
 
-// draw the text
+    /* Check for space to draw the text */
     y = vid.height - sb_lines - 1;
     numlines = sb_lines / 8;
     if (numlines < 3)
-	return;			// not enough room
+	return;
 
-    // find us
-    for (i = 0; i < scoreboardlines; i++)
-	if (fragsort[i] == cl.playernum)
+    /* Find client in the scoreboard, if not there (spectator) display top */
+    for (line = 0; line < scoreboardlines; line++)
+	if (fragsort[line] == cl.playernum)
 	    break;
+    if (line == scoreboardlines)
+	line = 0;
 
-    if (i == scoreboardlines)	// we're not there, we are probably a spectator, just display top
-	i = 0;
-    else			// figure out start
-	i = i - numlines / 2;
-
-    if (i > scoreboardlines - numlines)
-	i = scoreboardlines - numlines;
-    if (i < 0)
-	i = 0;
+    /* Put the client in the centre of the displayed lines */
+    line = qclamp(line - numlines / 2, 0, scoreboardlines - numlines);
 
     x = 324;
-
-    for ( /* */ ; i < scoreboardlines && y < vid.height - 8 + 1; i++) {
-	k = fragsort[i];
-	s = &cl.players[k];
-	if (!s->name[0])
+    while (line < scoreboardlines && y < vid.height - 8 + 1) {
+	const int playernum = fragsort[line++];
+	const player_info_t *player = &cl.players[playernum];
+	if (!player->name[0])
 	    continue;
 
-	// draw ping
-	top = s->topcolor;
-	bottom = s->bottomcolor;
-	top = Sbar_ColorForMap(top);
-	bottom = Sbar_ColorForMap(bottom);
-
+	/* draw background */
+	top = Sbar_ColorForMap(player->topcolor);
+	bottom = Sbar_ColorForMap(player->bottomcolor);
 	Draw_Fill(x, y + 1, 40, 3, top);
 	Draw_Fill(x, y + 4, 40, 4, bottom);
 
-	// draw number
-	f = s->frags;
-	sprintf(num, "%3i", f);
-
-	Draw_Character(x + 8, y, num[0]);
-	Draw_Character(x + 16, y, num[1]);
-	Draw_Character(x + 24, y, num[2]);
-
-	if (k == cl.playernum) {
+	/* draw frags */
+	char frags[4];
+	snprintf(frags, sizeof(frags), "%3d", player->frags);
+	Draw_Character(x + 8, y, frags[0]);
+	Draw_Character(x + 16, y, frags[1]);
+	Draw_Character(x + 24, y, frags[2]);
+	if (playernum == cl.playernum) {
 	    Draw_Character(x, y, 16);
 	    Draw_Character(x + 32, y, 17);
 	}
-	// team
+
+	/* draw team name */
 	if (teamplay) {
-	    team[4] = 0;
-	    strncpy(team, Info_ValueForKey(s->userinfo, "team"), 4);
-	    Draw_String(x + 48, y, team);
+	    const char *playerteam = Info_ValueForKey(player->userinfo, "team");
+	    char short_team[5];
+	    snprintf(short_team, sizeof(short_team), "%-4s", playerteam);
+	    Draw_String(x + 48, y, short_team);
 	}
-	// draw name
-	name[16] = 0;
-	strncpy(name, s->name, 16);
+
+	/* draw name */
+	char name[17];
+	snprintf(name, sizeof(name), "%-16s", player->name);
 	if (teamplay)
 	    Draw_String(x + 48 + 40, y, name);
 	else
 	    Draw_String(x + 48, y, name);
+
 	y += 8;
     }
 
-    // draw teams if room
+    /* draw teams if room */
     if (vid.width < 640 || !teamplay)
 	return;
 
-    // draw seperator
+    /* draw seperator */
     x += 208;
     for (y = vid.height - sb_lines; y < vid.height - 6; y += 2)
 	Draw_Character(x, y, 14);
 
+    const player_info_t *player = &cl.players[cl.playernum];
+    const char *playerteam = Info_ValueForKey(player->userinfo, "team");
+
     x += 16;
-
     y = vid.height - sb_lines;
-    for (i = 0; i < scoreboardteams && y <= vid.height; i++) {
-	k = teamsort[i];
-	tm = teams + k;
+    line = 0;
+    while (line < scoreboardteams && y <= vid.height) {
+	const team_t *team = teams + teamsort[line++];
 
-	// draw pings
-	team[4] = 0;
-	strncpy(team, tm->team, 4);
-	Draw_String(x, y, team);
+	/* draw teamname */
+	char short_team[5];
+	snprintf(short_team, sizeof(short_team), "%-4s", team->team);
+	Draw_String(x, y, short_team);
 
-	// draw total
-	sprintf(num, "%5i", tm->frags);
-	Draw_String(x + 40, y, num);
-
-	if (!strncmp(Info_ValueForKey(cl.players[cl.playernum].userinfo,
-				      "team"), tm->team, 16)) {
+	/* draw frags */
+	char frags[4];
+	snprintf(frags, sizeof(frags), "%3d", team->frags);
+	Draw_String(x + 40, y, frags);
+	if (!strncmp(team->team, playerteam, 16)) {
 	    Draw_Character(x - 8, y, 16);
 	    Draw_Character(x + 32, y, 17);
 	}
 
 	y += 8;
     }
-
 }
 
 
@@ -1320,7 +1300,7 @@ Sbar_FinaleOverlay
 void
 Sbar_FinaleOverlay(void)
 {
-    qpic_t *pic;
+    const qpic8_t *pic;
 
     scr_copyeverything = 1;
 

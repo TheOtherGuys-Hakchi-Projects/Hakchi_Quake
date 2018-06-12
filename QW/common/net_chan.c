@@ -27,6 +27,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifdef _WIN32
 #include "winquake.h"
+#include <windows.h>
+#include <mmsystem.h>
 #endif
 
 #define	PACKET_HEADER	8
@@ -60,7 +62,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * multiple frames worth piling up while the last reliable transmit goes
  * unacknowledged, the netchan signals a fatal error.
  *
- * Reliable messages are allways placed first in a packet, then the unreliable
+ * Reliable messages are always placed first in a packet, then the unreliable
  * message is included if there is sufficient room.
  *
  * To the receiver, there is no distinction between the reliable and
@@ -331,10 +333,6 @@ Netchan_Process(netchan_t *chan)
     unsigned sequence, sequence_ack;
     unsigned reliable_ack, reliable_message;
 
-#ifdef SERVERONLY
-    int qport;
-#endif
-
     if (
 #ifndef SERVERONLY
 	   !cls.demoplayback &&
@@ -347,9 +345,9 @@ Netchan_Process(netchan_t *chan)
     sequence = MSG_ReadLong();
     sequence_ack = MSG_ReadLong();
 
-    /* read the qport if we are a server */
 #ifdef SERVERONLY
-    qport = MSG_ReadShort();
+    /* read the qport if we are a server (ignored - FIXME?) */
+    (void)MSG_ReadShort();
 #endif
 
     reliable_message = sequence >> 31;

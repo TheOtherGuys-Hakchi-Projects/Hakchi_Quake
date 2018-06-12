@@ -54,7 +54,6 @@ int r_p0[6], r_p1[6], r_p2[6];
 
 byte *d_pcolormap;
 
-int d_aflatcolor;
 int d_xdenom;
 
 static edgetable *pedgetable;
@@ -73,11 +72,6 @@ static edgetable edgetables[12] = {
     {0, 1, r_p0, r_p2, NULL, 1, r_p0, r_p1, NULL},
 };
 
-/*
- * FIXME: some of these could become statics
- *        most used in d_polysa.S also, but some only used in one file or the
- *        other, depending on USE_X86_ASM.
- */
 int a_sstepxfrac, a_tstepxfrac, r_lstepx, a_ststepxwhole;
 int r_sstepx, r_tstepx, r_lstepy, r_sstepy, r_tstepy;
 int r_zistepx, r_zistepy;
@@ -109,16 +103,17 @@ byte *skintable[MAX_LBM_HEIGHT];
 static int skinwidth;
 static byte *skinstart;
 
-void D_DrawSubdiv(void);
-void D_DrawNonSubdiv(void);
 void D_PolysetDrawSpans8(spanpackage_t *pspanpackage);
 void D_PolysetCalcGradients(int skinwidth);
-void D_PolysetRecursiveTriangle(int *p1, int *p2, int *p3);
 void D_PolysetSetEdgeTable(void);
 void D_RasterizeAliasPolySmooth(void);
 void D_PolysetScanLeftEdge(int height);
 
 #ifndef USE_X86_ASM
+
+static void D_DrawSubdiv(void);
+static void D_DrawNonSubdiv(void);
+static void D_PolysetRecursiveTriangle(int *p1, int *p2, int *p3);
 
 /*
 ================
@@ -128,12 +123,10 @@ D_PolysetDraw
 void
 D_PolysetDraw(void)
 {
-    spanpackage_t spans[DPS_MAXSPANS + 1 +
-			((CACHE_SIZE - 1) / sizeof(spanpackage_t)) + 1];
-    // one extra because of cache line pretouching
+    spanpackage_t spans[CACHE_PAD_ARRAY(DPS_MAXSPANS + 1, spanpackage_t)];
+    /* one extra because of cache line pretouching */
 
-    a_spans = (spanpackage_t *)
-	(((long)&spans[0] + CACHE_SIZE - 1) & ~(CACHE_SIZE - 1));
+    a_spans = CACHE_ALIGN_PTR(spans);
 
     if (r_affinetridesc.drawtype) {
 	D_DrawSubdiv();
@@ -179,7 +172,7 @@ D_PolysetDrawFinalVerts(finalvert_t *fv, int numverts)
 D_DrawSubdiv
 ================
 */
-void
+static void
 D_DrawSubdiv(void)
 {
     mtriangle_t *ptri;
@@ -236,7 +229,7 @@ D_DrawSubdiv(void)
 D_DrawNonSubdiv
 ================
 */
-void
+static void
 D_DrawNonSubdiv(void)
 {
     mtriangle_t *ptri;
@@ -302,7 +295,7 @@ D_DrawNonSubdiv(void)
 D_PolysetRecursiveTriangle
 ================
 */
-void
+static void
 D_PolysetRecursiveTriangle(int *lp1, int *lp2, int *lp3)
 {
     int *temp;

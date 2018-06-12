@@ -22,7 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "common.h"
 #include "console.h"
 #include "glquake.h"
-#include "gl_model.h"
+#include "model.h"
 #include "quakedef.h"
 #include "sys.h"
 
@@ -34,14 +34,14 @@ ALIAS MODEL DISPLAY LIST GENERATION
 =================================================================
 */
 
-aliashdr_t *paliashdr;
-
-static model_t *aliasmodel;
 static int used[8192];
 
 // the command list holds counts and s/t values that are valid for
 // every frame
-static int commands[8192];
+union {
+    int i;
+    float f;
+} commands[8192];
 static int numcommands;
 
 // all frames will have their vertexes rearranged and expanded
@@ -61,16 +61,16 @@ StripLength
 ================
 */
 static int
-StripLength(aliashdr_t *hdr, int starttri, int startv)
+StripLength(aliashdr_t *hdr, int starttri, int startv, const mtriangle_t *tris)
 {
+    const mtriangle_t *last, *check;
     int m1, m2;
     int j;
-    mtriangle_t *last, *check;
     int k;
 
     used[starttri] = 2;
 
-    last = &triangles[starttri];
+    last = &tris[starttri];
 
     stripverts[0] = last->vertindex[(startv) % 3];
     stripverts[1] = last->vertindex[(startv + 1) % 3];
@@ -84,7 +84,7 @@ StripLength(aliashdr_t *hdr, int starttri, int startv)
 
     // look for a matching triangle
   nexttri:
-    for (j = starttri + 1, check = &triangles[starttri + 1];
+    for (j = starttri + 1, check = &tris[starttri + 1];
 	 j < hdr->numtris; j++, check++) {
 	if (check->facesfront != last->facesfront)
 	    continue;
@@ -130,16 +130,16 @@ FanLength
 ===========
 */
 static int
-FanLength(aliashdr_t *hdr, int starttri, int startv)
+FanLength(aliashdr_t *hdr, int starttri, int startv, const mtriangle_t *tris)
 {
+    const mtriangle_t *last, *check;
     int m1, m2;
     int j;
-    mtriangle_t *last, *check;
     int k;
 
     used[starttri] = 2;
 
-    last = &triangles[starttri];
+    last = &tris[starttri];
 
     stripverts[0] = last->vertindex[(startv) % 3];
     stripverts[1] = last->vertindex[(startv + 1) % 3];
@@ -151,10 +151,9 @@ FanLength(aliashdr_t *hdr, int starttri, int startv)
     m1 = last->vertindex[(startv + 0) % 3];
     m2 = last->vertindex[(startv + 2) % 3];
 
-
     // look for a matching triangle
   nexttri:
-    for (j = starttri + 1, check = &triangles[starttri + 1];
+    for (j = starttri + 1, check = &tris[starttri + 1];
 	 j < hdr->numtris; j++, check++) {
 	if (check->facesfront != last->facesfront)
 	    continue;
@@ -201,7 +200,7 @@ for the model, which holds for all frames
 ================
 */
 static void
-BuildTris(aliashdr_t *hdr)
+BuildTris(aliashdr_t *hdr, const mtriangle_t *tris, const stvert_t *stverts)
 {
     int i, j, k;
     int startv;
@@ -227,9 +226,9 @@ BuildTris(aliashdr_t *hdr)
 	for (type = 0; type < 2; type++) {
 	    for (startv = 0; startv < 3; startv++) {
 		if (type == 1)
-		    len = StripLength(hdr, i, startv);
+		    len = StripLength(hdr, i, startv, tris);
 		else
-		    len = FanLength(hdr, i, startv);
+		    len = FanLength(hdr, i, startv, tris);
 		if (len > bestlen) {
 		    besttype = type;
 		    bestlen = len;
@@ -246,9 +245,9 @@ BuildTris(aliashdr_t *hdr)
 	    used[besttris[j]] = 1;
 
 	if (besttype == 1)
-	    commands[numcommands++] = (bestlen + 2);
+	    commands[numcommands++].i = (bestlen + 2);
 	else
-	    commands[numcommands++] = -(bestlen + 2);
+	    commands[numcommands++].i = -(bestlen + 2);
 
 	for (j = 0; j < bestlen + 2; j++) {
 	    // emit a vertex into the reorder buffer
@@ -258,17 +257,17 @@ BuildTris(aliashdr_t *hdr)
 	    // emit s/t coords into the commands stream
 	    s = stverts[k].s;
 	    t = stverts[k].t;
-	    if (!triangles[besttris[0]].facesfront && stverts[k].onseam)
+	    if (!tris[besttris[0]].facesfront && stverts[k].onseam)
 		s += hdr->skinwidth / 2;	// on back side
 	    s = (s + 0.5) / hdr->skinwidth;
 	    t = (t + 0.5) / hdr->skinheight;
 
-	    *(float *)&commands[numcommands++] = s;
-	    *(float *)&commands[numcommands++] = t;
+	    commands[numcommands++].f = s;
+	    commands[numcommands++].f = t;
 	}
     }
 
-    commands[numcommands++] = 0;	// end of list marker
+    commands[numcommands++].i = 0;	// end of list marker
 
     Con_DPrintf("%3i tri %3i vert %3i cmd\n", hdr->numtris, numorder,
 		numcommands);
@@ -277,6 +276,48 @@ BuildTris(aliashdr_t *hdr)
     alltris += hdr->numtris;
 }
 
+static void
+GL_MeshSwapCommands(void)
+{
+    int i;
+
+    for (i = 0; i < numcommands; i++)
+	commands[i].i = LittleLong(commands[i].i);
+    for (i = 0; i < numorder; i++)
+	vertexorder[i] = LittleLong(vertexorder[i]);
+}
+
+/*
+ * Do minimal checks on any cached data loaded to at least ensure we
+ * don't crash when trying to render the model.
+ */
+static qboolean
+GL_MeshVerifyCommands(const aliashdr_t *hdr, const model_t *model)
+{
+    int i, length, verts;
+
+    if (numcommands < 0 || numcommands >= 8192)
+	return false;
+    if (numorder < 0 || numorder >= 8192)
+	return false;
+
+    for (i = 0; i < numorder; i++)
+	if (vertexorder[i] < 0 || vertexorder[i] >= hdr->numverts)
+	    return false;
+
+    i = 0, verts = 0;
+    while (i < numcommands) {
+	length = commands[i].i;
+	if (length < 0)
+	    length = -length;
+	verts += length;
+	i += 1 + length * 2;
+    }
+    if (i != numcommands || verts != numorder)
+	return false;
+
+    return true;
+}
 
 /*
 ================
@@ -284,74 +325,86 @@ GL_MakeAliasModelDisplayLists
 ================
 */
 void
-GL_MakeAliasModelDisplayLists(model_t *m, aliashdr_t *hdr)
+GL_LoadMeshData(const model_t *model, aliashdr_t *hdr,
+		const alias_meshdata_t *meshdata,
+		const alias_posedata_t *posedata)
 {
-    int i, j;
+    int i, j, tmp, err;
     int *cmds;
     trivertx_t *verts;
-    char cache[MAX_QPATH];
+    char cache[MAX_OSPATH];
     FILE *f;
+    qboolean cached = false;
+    const char *name;
 
-    aliasmodel = m;
-    paliashdr = hdr;		// (aliashdr_t *)Mod_Extradata (m);
-
-    //
-    // look for a cached version
-    //
-    sprintf(cache, "%s/glquake/", com_gamedir);
-    COM_StripExtension(m->name + strlen("progs/"), cache + strlen(cache));
-    strcat(cache, ".ms2");
+    /* look for a cached version */
+    name = COM_SkipPath(model->name);
+    snprintf(cache, sizeof(cache), "%s/glquake/%s", com_gamedir, name);
+    err = COM_DefaultExtension(cache, ".ms2", cache, sizeof(cache));
+    if (err)
+	Sys_Error("%s: model pathname too long (%s)", __func__, model->name);
 
     f = fopen(cache, "rb");
     if (f) {
+	cached = true;
 	fread(&numcommands, 4, 1, f);
 	fread(&numorder, 4, 1, f);
-	fread(&commands, numcommands * sizeof(commands[0]), 1, f);
-	fread(&vertexorder, numorder * sizeof(vertexorder[0]), 1, f);
+	numcommands = LittleLong(numcommands);
+	numorder = LittleLong(numorder);
+	if (numcommands < 0 || numcommands > 8192)
+	    cached = false;
+	if (numorder < 0 || numorder > 8192)
+	    cached = false;
+	if (cached) {
+	    fread(&commands, numcommands * sizeof(commands[0]), 1, f);
+	    fread(&vertexorder, numorder * sizeof(vertexorder[0]), 1, f);
+	    GL_MeshSwapCommands();
+	    cached = GL_MeshVerifyCommands(hdr, model);
+	}
 	fclose(f);
-    } else {
-	//
-	// build it from scratch
-	//
-	Con_DPrintf("meshing %s...\n", m->name);
+	if (!cached)
+	    Con_DPrintf("bad cached commands for mesh %s\n", model->name);
+    }
 
-	BuildTris(hdr);		// trifans or lists
+    if (!cached) {
+	/* build it from scratch */
+	Con_DPrintf("meshing %s...\n", model->name);
+	BuildTris(hdr, meshdata->triangles, meshdata->stverts);
 
-	//
-	// save out the cached version
-	//
+	/* save out the cached version */
 	f = fopen(cache, "wb");
 	if (!f) {
-	    // Maybe the directory wasn't present, try again
 	    char gldir[MAX_OSPATH];
 
-	    sprintf(gldir, "%s/glquake", com_gamedir);
+	    /* Maybe the directory wasn't present, try again */
+	    snprintf(gldir, sizeof(gldir), "%s/glquake", com_gamedir);
 	    Sys_mkdir(gldir);
 	    f = fopen(cache, "wb");
 	}
 
 	if (f) {
-	    fwrite(&numcommands, 4, 1, f);
-	    fwrite(&numorder, 4, 1, f);
+	    tmp = LittleLong(numcommands);
+	    fwrite(&tmp, 4, 1, f);
+	    tmp = LittleLong(numorder);
+	    fwrite(&tmp, 4, 1, f);
+	    GL_MeshSwapCommands();
 	    fwrite(&commands, numcommands * sizeof(commands[0]), 1, f);
 	    fwrite(&vertexorder, numorder * sizeof(vertexorder[0]), 1, f);
+	    GL_MeshSwapCommands();
 	    fclose(f);
 	}
     }
 
-
-    // save the data out
-
-    paliashdr->poseverts = numorder;
+    /* save the data out to the in-memory model */
+    hdr->numverts = numorder;
 
     cmds = Hunk_Alloc(numcommands * 4);
-    paliashdr->commands = (byte *)cmds - (byte *)paliashdr;
+    GL_Aliashdr(hdr)->commands = (byte *)cmds - (byte *)hdr;
     memcpy(cmds, commands, numcommands * 4);
 
-    verts = Hunk_Alloc(paliashdr->numposes * paliashdr->poseverts
-		       * sizeof(trivertx_t));
-    paliashdr->posedata = (byte *)verts - (byte *)paliashdr;
-    for (i = 0; i < paliashdr->numposes; i++)
+    verts = Hunk_Alloc(hdr->numposes * hdr->numverts * sizeof(trivertx_t));
+    hdr->posedata = (byte *)verts - (byte *)hdr;
+    for (i = 0; i < hdr->numposes; i++)
 	for (j = 0; j < numorder; j++)
-	    *verts++ = poseverts[i][vertexorder[j]];
+	    *verts++ = posedata->verts[i][vertexorder[j]];
 }

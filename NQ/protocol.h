@@ -23,7 +23,82 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 // protocol.h -- communications protocols
 
-#define	PROTOCOL_VERSION 15
+#include "qtypes.h"
+
+#define PROTOCOL_VERSION_NQ   15
+#define PROTOCOL_VERSION_FITZ 666
+#define PROTOCOL_VERSION_BJP  10000
+#define PROTOCOL_VERSION_BJP2 10001
+#define PROTOCOL_VERSION_BJP3 10002
+
+static inline qboolean
+Protocol_Known(int version)
+{
+    switch (version) {
+    case PROTOCOL_VERSION_NQ:
+    case PROTOCOL_VERSION_FITZ:
+    case PROTOCOL_VERSION_BJP:
+    case PROTOCOL_VERSION_BJP2:
+    case PROTOCOL_VERSION_BJP3:
+	return true;
+    default:
+	return false;
+    }
+}
+
+static inline int
+max_models(int protocol)
+{
+    switch (protocol) {
+    case PROTOCOL_VERSION_NQ:
+	return qmin(256, MAX_MODELS);
+    case PROTOCOL_VERSION_BJP:
+    case PROTOCOL_VERSION_BJP2:
+    case PROTOCOL_VERSION_BJP3:
+    case PROTOCOL_VERSION_FITZ:
+	return qmin(65536, MAX_MODELS);
+    default:
+	return 0;
+    }
+}
+
+static inline int
+max_sounds_static(int protocol)
+{
+    switch (protocol) {
+    case PROTOCOL_VERSION_NQ:
+    case PROTOCOL_VERSION_BJP:
+    case PROTOCOL_VERSION_BJP3:
+	return qmin(256, MAX_SOUNDS);
+    case PROTOCOL_VERSION_BJP2:
+    case PROTOCOL_VERSION_FITZ:
+	return qmin(65536, MAX_SOUNDS);
+    default:
+	return 0;
+    }
+}
+
+static inline int
+max_sounds_dynamic(int protocol)
+{
+    switch (protocol) {
+    case PROTOCOL_VERSION_NQ:
+    case PROTOCOL_VERSION_BJP:
+	return qmin(256, MAX_SOUNDS);
+    case PROTOCOL_VERSION_BJP2:
+    case PROTOCOL_VERSION_BJP3:
+    case PROTOCOL_VERSION_FITZ:
+	return qmin(65536, MAX_SOUNDS);
+    default:
+	return 0;
+    }
+}
+
+static inline int
+max_sounds(int p)
+{
+    return qmax(max_sounds_dynamic(p), max_sounds_static(p));
+}
 
 // if the high bit of the servercmd is set, the low bits are fast update flags:
 #define	U_MOREBITS	(1<<0)
@@ -44,6 +119,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	U_EFFECTS	(1<<13)
 #define	U_LONGENTITY	(1<<14)
 
+// Extra FITZ bits
+#define U_FITZ_EXTEND1  (1<<15)
+#define U_FITZ_ALPHA    (1<<16) // alpha byte follows
+#define U_FITZ_FRAME2   (1<<17) // byte for frame high bits follows
+#define U_FITZ_MODEL2   (1<<18) // byte for model high bits follows
+#define U_FITZ_LERPFINISH (1<<19)
+#define U_FITZ_EXTEND2  (1<<23)
 
 #define	SU_VIEWHEIGHT	(1<<0)
 #define	SU_IDEALPITCH	(1<<1)
@@ -61,11 +143,32 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	SU_ARMOR	(1<<13)
 #define	SU_WEAPON	(1<<14)
 
+// Extra FITZ bits
+#define SU_FITZ_EXTEND1      (1<<15)
+#define SU_FITZ_WEAPON2      (1<<16)
+#define SU_FITZ_ARMOR2       (1<<17)
+#define SU_FITZ_AMMO2        (1<<18)
+#define SU_FITZ_SHELLS2      (1<<19)
+#define SU_FITZ_NAILS2       (1<<20)
+#define SU_FITZ_ROCKETS2     (1<<21)
+#define SU_FITZ_CELLS2       (1<<22)
+#define SU_FITZ_EXTEND2      (1<<23)
+#define SU_FITZ_WEAPONFRAME2 (1<<24)
+#define SU_FITZ_WEAPONALPHA  (1<<25)
+#define SU_FITZ_EXTEND3      (1<<31)
+
 // a sound with no channel is a local only sound
 #define	SND_VOLUME	(1<<0)	// a byte
 #define	SND_ATTENUATION	(1<<1)	// a byte
 #define	SND_LOOPING	(1<<2)	// a long
+// Extra bits for FITZ protocol
+#define SND_FITZ_LARGEENTITY (1<<3)  // a short + byte (instead of just a short)
+#define SND_FITZ_LARGESOUND  (1<<4)  // a short soundindex (instead of a byte)
 
+// extra FITZ model flags
+#define B_FITZ_LARGEMODEL (1<<0)
+#define B_FITZ_LARGEFRAME (1<<1)
+#define B_FITZ_ALPHA      (1<<2)
 
 // defaults for clientinfo messages
 #define	DEFAULT_VIEWHEIGHT	22
@@ -133,6 +236,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define svc_sellscreen		33
 
 #define svc_cutscene		34
+
+// FITZ protocol messages
+#define svc_fitz_skybox		37
+#define svc_fitz_bf		40
+#define svc_fitz_fog		41
+#define svc_fitz_spawnbaseline2	42
+#define svc_fitz_spawnstatic2	43
+#define svc_fitz_spawnstaticsound2 44
 
 //
 // client to server

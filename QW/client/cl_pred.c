@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "console.h"
 #include "cvar.h"
 #include "mathlib.h"
+#include "model.h"
 #include "pmove.h"
 #include "quakedef.h"
 
@@ -29,44 +30,36 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "winquake.h"
 #endif
 
-// FIXME - header hacks
-extern frame_t *view_frame;
-
 cvar_t cl_nopred = { "cl_nopred", "0" };
 cvar_t cl_pushlatency = { "pushlatency", "-999" };
 
-
-/*
-=================
-CL_NudgePosition
-
-If pmove.origin is in a solid position,
-try nudging slightly on all axis to
-allow for the cut precision of the net coordinates
-=================
-*/
-void
-CL_NudgePosition(void)
+static void
+CL_PlayerMove(const player_state_t *from, player_state_t *to,
+	      const usercmd_t *cmd, const physent_stack_t *pestack,
+	      qboolean spectator)
 {
-    vec3_t base;
-    int x, y;
+    playermove_t pmove;
 
-    if (PM_HullPointContents
-	(&cl.model_precache[1]->hulls[1], 0, pmove.origin) == CONTENTS_EMPTY)
-	return;
+    /* Setup the player move info */
+    VectorCopy(from->origin, pmove.origin);
+    VectorCopy(cmd->angles, pmove.angles);
+    VectorCopy(from->velocity, pmove.velocity);
+    pmove.oldbuttons = from->oldbuttons;
+    pmove.waterjumptime = from->waterjumptime;
+    pmove.dead = cl.stats[STAT_HEALTH] <= 0;
+    pmove.spectator = spectator;
+    pmove.cmd = cmd;
 
-    VectorCopy(pmove.origin, base);
-    for (x = -1; x <= 1; x++) {
-	for (y = -1; y <= 1; y++) {
-	    pmove.origin[0] = base[0] + x * 1.0 / 8;
-	    pmove.origin[1] = base[1] + y * 1.0 / 8;
-	    if (PM_HullPointContents
-		(&cl.model_precache[1]->hulls[1], 0,
-		 pmove.origin) == CONTENTS_EMPTY)
-		return;
-	}
-    }
-    Con_DPrintf("CL_NudgePosition: stuck\n");
+    PlayerMove(&pmove, pestack);
+
+    /* Copy out the changes */
+    to->waterjumptime = pmove.waterjumptime;
+    to->oldbuttons = pmove.oldbuttons;
+    VectorCopy(pmove.origin, to->origin);
+    VectorCopy(pmove.angles, to->viewangles);
+    VectorCopy(pmove.velocity, to->velocity);
+    to->onground = !!pmove.onground;
+    to->weaponframe = from->weaponframe;
 }
 
 /*
@@ -75,48 +68,24 @@ CL_PredictUsercmd
 ==============
 */
 void
-CL_PredictUsercmd(player_state_t * from, player_state_t * to, usercmd_t *u,
+CL_PredictUsercmd(const player_state_t *from, player_state_t *to,
+		  const usercmd_t *cmd, const physent_stack_t *pestack,
 		  qboolean spectator)
 {
-    // split up very long moves
-    if (u->msec > 50) {
+    /* split up very long moves */
+    if (cmd->msec > 50) {
 	player_state_t temp;
 	usercmd_t split;
 
-	split = *u;
+	split = *cmd;
 	split.msec /= 2;
 
-	CL_PredictUsercmd(from, &temp, &split, spectator);
-	CL_PredictUsercmd(&temp, to, &split, spectator);
+	CL_PredictUsercmd(from, &temp, &split, pestack, spectator);
+	CL_PredictUsercmd(&temp, to, &split, pestack, spectator);
 	return;
     }
-
-    VectorCopy(from->origin, pmove.origin);
-//      VectorCopy (from->viewangles, pmove.angles);
-    VectorCopy(u->angles, pmove.angles);
-    VectorCopy(from->velocity, pmove.velocity);
-
-    pmove.oldbuttons = from->oldbuttons;
-    pmove.waterjumptime = from->waterjumptime;
-    pmove.dead = cl.stats[STAT_HEALTH] <= 0;
-    pmove.spectator = spectator;
-
-    pmove.cmd = *u;
-
-    PlayerMove();
-//for (i=0 ; i<3 ; i++)
-//pmove.origin[i] = ((int)(pmove.origin[i]*8))*0.125;
-    to->waterjumptime = pmove.waterjumptime;
-    to->oldbuttons = pmove.cmd.buttons;
-    VectorCopy(pmove.origin, to->origin);
-    VectorCopy(pmove.angles, to->viewangles);
-    VectorCopy(pmove.velocity, to->velocity);
-    to->onground = onground;
-
-    to->weaponframe = from->weaponframe;
+    CL_PlayerMove(from, to, cmd, pestack, spectator);
 }
-
-
 
 /*
 ==============
@@ -124,11 +93,14 @@ CL_PredictMove
 ==============
 */
 void
-CL_PredictMove(void)
+CL_PredictMove(physent_stack_t *pestack)
 {
     int i;
-    float f;
-    frame_t *from, *to = NULL;
+    float fraction;
+    const frame_t *from;
+    const player_state_t *fromstate;
+    frame_t *to;
+    player_state_t *tostate;
     int oldphysent;
 
     if (cl_pushlatency.value > 0)
@@ -153,74 +125,73 @@ CL_PredictMove(void)
 
     VectorCopy(cl.viewangles, cl.simangles);
 
-    // this is the last frame received from the server
+    /* this is the last frame received from the server */
     from = &cl.frames[cls.netchan.incoming_sequence & UPDATE_MASK];
+    fromstate = &from->playerstate[cl.playernum];
 
-    // we can now render a frame
-    if (cls.state == ca_onserver) {	// first update is the final signon stage
+    /* we can now render a frame */
+    if (cls.state == ca_onserver) {
+	/* first update is the final signon stage */
 	char text[1024];
 
 	cls.state = ca_active;
-	sprintf(text, "QuakeWorld: %s", cls.servername);
+	snprintf(text, sizeof(text), "QuakeWorld: %s", cls.servername);
 #ifdef _WIN32
 	SetWindowText(mainwindow, text);
 #endif
     }
 
     if (cl_nopred.value) {
-	VectorCopy(from->playerstate[cl.playernum].velocity, cl.simvel);
-	VectorCopy(from->playerstate[cl.playernum].origin, cl.simorg);
+	VectorCopy(fromstate->velocity, cl.simvel);
+	VectorCopy(fromstate->origin, cl.simorg);
 	return;
     }
-    // predict forward until cl.time <= to->senttime
-    oldphysent = pmove.numphysent;
-    CL_SetSolidPlayers(cl.playernum);
 
-//      to = &cl.frames[cls.netchan.incoming_sequence & UPDATE_MASK];
+    /* predict forward until cl.time <= to->senttime */
+    to = NULL;
+    tostate = NULL;
+    oldphysent = pestack->numphysent;
+    CL_SetSolidPlayers(pestack, cl.playernum);
 
     for (i = 1; i < UPDATE_BACKUP - 1 && cls.netchan.incoming_sequence + i <
 	 cls.netchan.outgoing_sequence; i++) {
 	to = &cl.frames[(cls.netchan.incoming_sequence + i) & UPDATE_MASK];
-	CL_PredictUsercmd(&from->playerstate[cl.playernum]
-			  , &to->playerstate[cl.playernum], &to->cmd,
-			  cl.spectator);
+	tostate = &to->playerstate[cl.playernum];
+	CL_PredictUsercmd(fromstate, tostate, &to->cmd, pestack, cl.spectator);
 	if (to->senttime >= cl.time)
 	    break;
 	from = to;
+	fromstate = tostate;
     }
+    pestack->numphysent = oldphysent;
 
-    pmove.numphysent = oldphysent;
-
-    if (i == UPDATE_BACKUP - 1 || !to)
-	return;			// net hasn't deliver packets in a long time...
-
-    // now interpolate some fraction of the final frame
-    if (to->senttime == from->senttime)
-	f = 0;
-    else {
-	f = (cl.time - from->senttime) / (to->senttime - from->senttime);
-
-	if (f < 0)
-	    f = 0;
-	if (f > 1)
-	    f = 1;
-    }
-
-    for (i = 0; i < 3; i++)
-	if (fabs(from->playerstate[cl.playernum].origin[i] - to->playerstate[cl.playernum].origin[i]) > 128) {	// teleported, so don't lerp
-	    VectorCopy(to->playerstate[cl.playernum].velocity, cl.simvel);
-	    VectorCopy(to->playerstate[cl.playernum].origin, cl.simorg);
-	    return;
-	}
+    /* bail if net hasn't delivered packets in a long time... */
+    if (i == UPDATE_BACKUP - 1 || !to || !tostate)
+	return;
 
     for (i = 0; i < 3; i++) {
-	cl.simorg[i] = from->playerstate[cl.playernum].origin[i]
-	    + f * (to->playerstate[cl.playernum].origin[i] -
-		   from->playerstate[cl.playernum].origin[i]);
-	cl.simvel[i] = from->playerstate[cl.playernum].velocity[i]
-	    + f * (to->playerstate[cl.playernum].velocity[i] -
-		   from->playerstate[cl.playernum].velocity[i]);
+	if (fabs(fromstate->origin[i] - tostate->origin[i]) > 128) {
+	    /* teleported, so don't lerp */
+	    VectorCopy(tostate->velocity, cl.simvel);
+	    VectorCopy(tostate->origin, cl.simorg);
+	    return;
+	}
     }
+
+    /* interpolate some fraction of the final frame */
+    if (to->senttime == from->senttime) {
+	fraction = 0;
+    } else {
+	fraction = (cl.time - from->senttime) / (to->senttime - from->senttime);
+	if (fraction < 0)
+	    fraction = 0;
+	else if (fraction > 1)
+	    fraction = 1;
+    }
+    VectorSubtract(tostate->origin, fromstate->origin, cl.simorg);
+    VectorMA(fromstate->origin, fraction, cl.simorg, cl.simorg);
+    VectorSubtract(tostate->velocity, fromstate->velocity, cl.simvel);
+    VectorMA(fromstate->velocity, fraction, cl.simvel, cl.simvel);
 }
 
 

@@ -25,14 +25,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <windows.h>
 #endif
 
+#ifdef APPLE_OPENGL
+#include <OpenGL/gl.h>
+#else
 #include <GL/gl.h>
+#endif
+
 #ifdef _WIN32
 #include <GL/glext.h>
 #endif
 
 #include "client.h"
-#include "gl_model.h"
+#include "model.h"
 #include "protocol.h"
+#include "qpic.h"
 
 #ifndef APIENTRY
 #define APIENTRY
@@ -43,48 +49,23 @@ void GL_EndRendering(void);
 
 extern unsigned char d_15to8table[65536];
 
-#ifdef _WIN32
-// Function prototypes for the Texture Object Extension routines
-typedef GLboolean (APIENTRY *ARETEXRESFUNCPTR) (GLsizei, const GLuint *,
-						const GLboolean *);
-typedef void (APIENTRY *BINDTEXFUNCPTR) (GLenum, GLuint);
-typedef void (APIENTRY *DELTEXFUNCPTR) (GLsizei, const GLuint *);
-typedef void (APIENTRY *GENTEXFUNCPTR) (GLsizei, GLuint *);
-typedef GLboolean (APIENTRY *ISTEXFUNCPTR) (GLuint);
-typedef void (APIENTRY *PRIORTEXFUNCPTR) (GLsizei, const GLuint *,
-					  const GLclampf *);
-typedef void (APIENTRY *TEXSUBIMAGEPTR) (int, int, int, int, int, int, int,
-					 int, void *);
-
-extern BINDTEXFUNCPTR bindTexFunc;
-extern DELTEXFUNCPTR delTexFunc;
-extern TEXSUBIMAGEPTR TexSubImage2DFunc;
-
-// ARB Multitexture
+/* ARB Multitexture compatibilty for old GL headers... remove this? */
 #ifndef GL_VERSION_1_2
-# define   GL_TEXTURE0_ARB  0x84C0
-# define   GL_TEXTURE1_ARB  0x84C1
+#define GL_TEXTURE0_ARB 0x84C0
+#define GL_TEXTURE1_ARB 0x84C1
 #endif
-
-#endif /* _WIN32 */
-
 #ifndef GL_VERSION_1_3
 #define GL_MAX_TEXTURE_UNITS GL_MAX_TEXTURE_UNITS_ARB
 #endif
 
-extern int texture_mode;
-
 extern float gldepthmin, gldepthmax;
 
-void GL_Upload32(const unsigned *data, int width, int height,
-		 qboolean mipmap, qboolean alpha);
-void GL_Upload8(const byte *data, int width, int height,
-		qboolean mipmap, qboolean alpha);
-void GL_Upload8_EXT(const byte *data, int width, int height,
-		    qboolean mipmap, qboolean alpha);
-int GL_LoadTexture(const char *identifier, int width, int height,
-		   const byte *data, qboolean mipmap, qboolean alpha);
-int GL_FindTexture(const char *identifier);
+void GL_Upload8(const qpic8_t *pic, qboolean mipmap);
+void GL_Upload8_Alpha(const qpic8_t *pic, qboolean mipmap, byte alpha);
+int GL_LoadTexture(const char *name, const qpic8_t *pic, qboolean mipmap);
+int GL_LoadTexture_Alpha(const char *name, const qpic8_t *pic, qboolean mipmap,
+			 byte alpha);
+int GL_FindTexture(const char *naem);
 
 void GL_SelectTexture(GLenum);
 
@@ -158,7 +139,6 @@ typedef struct particle_s {
 extern entity_t r_worldentity;
 extern qboolean r_cache_thrash;	// compatability
 extern vec3_t modelorg, r_entorigin;
-extern entity_t *currententity;
 extern int r_visframecount;	// ??? what difs?
 extern int r_framecount;
 extern int c_brush_polys;
@@ -183,6 +163,7 @@ extern int d_lightstylevalue[256];	// 8.8 fraction of base light value
 extern qboolean envmap;
 extern GLuint currenttexture;
 extern GLuint particletexture;
+extern GLuint charset_texture;
 extern GLuint playertextures[MAX_CLIENTS];
 
 extern cvar_t r_norefresh;
@@ -210,7 +191,9 @@ extern cvar_t gl_keeptjunctions;
 extern cvar_t gl_reporttjunctions;
 extern cvar_t gl_flashblend;
 extern cvar_t gl_nocolors;
+extern cvar_t gl_zfix;
 extern cvar_t gl_finish;
+extern cvar_t gl_subdivide_size;
 
 extern cvar_t _gl_allowgammafallback;
 extern cvar_t _gl_drawhull;
@@ -231,6 +214,7 @@ extern int gl_alpha_format;
 
 extern cvar_t gl_max_size;
 extern cvar_t gl_playermip;
+extern cvar_t gl_npot;
 
 extern int mirrortexturenum;	// quake texturenum, not gltexturenum
 extern qboolean mirror;
@@ -239,6 +223,9 @@ extern mplane_t *mirror_plane;
 extern float r_world_matrix[16];
 
 extern const char *gl_renderer;
+extern const char *gl_extensions;
+
+void GL_InitTextures(void);
 
 void R_TranslatePlayerSkin(int playernum);
 void GL_Bind(int texnum);
@@ -252,14 +239,16 @@ extern lpMultiTexFUNC qglMultiTexCoord2fARB;
 extern lpActiveTextureFUNC qglActiveTextureARB;
 
 extern qboolean gl_mtexable;
+extern qboolean gl_npotable;
 
+void GL_ExtensionCheck_NPoT(void);
 void GL_DisableMultitexture(void);
 void GL_EnableMultitexture(void);
 
 //
 // gl_warp.c
 //
-void GL_SubdivideSurface(msurface_t *fa);
+void GL_SubdivideSurface(brushmodel_t *brushmodel, msurface_t *surf);
 void EmitBothSkyLayers(msurface_t *fa);
 void EmitWaterPolys(msurface_t *fa);
 void EmitSkyPolys(msurface_t *fa);
@@ -273,8 +262,13 @@ void GL_Set2D(void);
 //
 // gl_rmain.c
 //
-qboolean R_CullBox(vec3_t mins, vec3_t maxs);
-void R_RotateForEntity(entity_t *e);
+qboolean R_CullBox(const vec3_t mins, const vec3_t maxs);
+void R_RotateForEntity(const vec3_t origin, const vec3_t angles);
+
+/*
+ * The renderer supplies callbacks to the model loader
+ */
+const model_loader_t *R_ModelLoader(void);
 
 //
 // gl_rlight.c
@@ -282,7 +276,7 @@ void R_RotateForEntity(entity_t *e);
 void R_MarkLights(dlight_t *light, int bit, mnode_t *node);
 void R_AnimateLight(void);
 void R_RenderDlights(void);
-int R_LightPoint(vec3_t p);
+int R_LightPoint(const vec3_t point);
 
 //
 // gl_refrag.c
@@ -292,7 +286,9 @@ void R_StoreEfrags(efrag_t **ppefrag);
 //
 // gl_mesh.c
 //
-void GL_MakeAliasModelDisplayLists(model_t *m, aliashdr_t *hdr);
+void GL_LoadMeshData(const model_t *m, aliashdr_t *hdr,
+		     const alias_meshdata_t *meshdata,
+		     const alias_posedata_t *posedata);
 
 //
 // gl_rmisc.c
@@ -302,12 +298,12 @@ void R_InitBubble(void);
 //
 // gl_rsurf.c
 //
-void R_DrawBrushModel(entity_t *e);
+void R_DrawBrushModel(const entity_t *e);
 void R_DrawWorld(void);
 void R_DrawWorldHull(void); /* Quick hack for now... */
 void R_DrawWaterSurfaces(void);
-void R_RenderBrushPoly(msurface_t *fa); // only gl_rmain.c:R_Mirror
-void GL_BuildLightmaps(void);
+void R_RenderBrushPoly(const entity_t *e, msurface_t *fa);
+void GL_BuildLightmaps(void *hunkbase);
 
 //
 // Used only for r_shadows 1 (remove?)

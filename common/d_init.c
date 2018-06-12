@@ -24,9 +24,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define NUM_MIPS	4
 
-cvar_t d_subdiv16 = { "d_subdiv16", "1" };
-cvar_t d_mipcap = { "d_mipcap", "0" };
-cvar_t d_mipscale = { "d_mipscale", "1" };
+static cvar_t d_subdiv16 = { "d_subdiv16", "1" };
+static cvar_t d_mipcap = { "d_mipcap", "0" };
+static cvar_t d_mipscale = { "d_mipscale", "1" };
 
 surfcache_t *d_initial_rover;
 qboolean d_roverwrapped;
@@ -35,8 +35,7 @@ float d_scalemip[NUM_MIPS - 1];
 
 static float basemip[NUM_MIPS - 1] = { 1.0, 0.5 * 0.8, 0.25 * 0.8 };
 
-void (*d_drawspans) (espan_t *pspan);
-
+void (*D_DrawSpans)(espan_t *pspan);
 
 /*
 ===============
@@ -53,8 +52,6 @@ D_Init(void)
     Cvar_RegisterVariable(&d_mipcap);
     Cvar_RegisterVariable(&d_mipscale);
 
-    r_drawpolys = false;
-    r_worldpolysbacktofront = false;
     r_recursiveaffinetriangles = true;
     r_pixbytes = 1;
     r_aliasuvscale = 1.0;
@@ -64,21 +61,16 @@ D_Init(void)
 /*
 ===============
 D_CopyRects
+
+this function is only required if the CPU doesn't have direct access to the
+back buffer, and there's some driver interface function that the driver
+doesn't support and requires Quake to do in software (such as drawing the
+console); Quake will then draw into wherever the driver points vid.buffer
+and will call this function before swapping buffers
 ===============
 */
 void
-D_CopyRects(vrect_t *prects, int transparent)
-{
-
-// this function is only required if the CPU doesn't have direct access to the
-// back buffer, and there's some driver interface function that the driver
-// doesn't support and requires Quake to do in software (such as drawing the
-// console); Quake will then draw into wherever the driver points vid.buffer
-// and will call this function before swapping buffers
-
-    UNUSED(prects);
-    UNUSED(transparent);
-}
+D_CopyRects(vrect_t *prects, int transparent) { }
 
 
 /*
@@ -151,27 +143,21 @@ D_SetupFrame(void)
 
 #ifdef USE_X86_ASM
     if (d_subdiv16.value)
-	d_drawspans = D_DrawSpans16;
+	D_DrawSpans = D_DrawSpans16;
     else
-	d_drawspans = D_DrawSpans8;
+	D_DrawSpans = D_DrawSpans8;
 #else
-    d_drawspans = D_DrawSpans8;
+    D_DrawSpans = D_DrawSpans8;
 #endif
-
-    d_aflatcolor = 0;
 }
 
 
 /*
 ===============
 D_UpdateRects
+
+the software driver draws these directly to the vid buffer
 ===============
 */
 void
-D_UpdateRects(vrect_t *prect)
-{
-
-// the software driver draws these directly to the vid buffer
-
-    UNUSED(prect);
-}
+D_UpdateRects(vrect_t *prect) { }

@@ -18,6 +18,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
 
+#include <ctype.h>
+#include <stdio.h>
+
 #include "client.h"
 #include "cmd.h"
 #include "console.h"
@@ -104,11 +107,11 @@ CL_GetMessage(void)
 
     if (cls.demoplayback) {
 	// decide if it is time to grab the next message
-	// allways grab until fully connected
+	// always grab until fully connected
 	if (cls.state == ca_active) {
 	    if (cls.timedemo) {
 		if (host_framecount == cls.td_lastframe)
-		    return 0;	// allready read this frame's message
+		    return 0;	// already read this frame's message
 
 		cls.td_lastframe = host_framecount;
 
@@ -125,7 +128,7 @@ CL_GetMessage(void)
 	fread(&net_message.cursize, 4, 1, cls.demofile);
 	VectorCopy(cl.mviewangles[0], cl.mviewangles[1]);
 	for (i = 0; i < 3; i++) {
-	    r = fread(&f, 4, 1, cls.demofile);
+	    fread(&f, 4, 1, cls.demofile);
 	    cl.mviewangles[0][i] = LittleFloat(f);
 	}
 
@@ -200,9 +203,8 @@ record <demoname> <map> [cd track]
 void
 CL_Record_f(void)
 {
-    int c;
+    int c, track, length, err;
     char name[MAX_OSPATH];
-    int track;
 
     if (cmd_source != src_command)
 	return;
@@ -231,19 +233,22 @@ CL_Record_f(void)
     } else
 	track = -1;
 
-    sprintf(name, "%s/%s", com_gamedir, Cmd_Argv(1));
+    /* Grab the filename before our cmd args disappear */
+    length = snprintf(name, sizeof(name), "%s/%s", com_gamedir, Cmd_Argv(1));
+    err = COM_DefaultExtension(name, ".dem", name, sizeof(name));
+    if (length >= sizeof(name) || err) {
+	Con_Printf("Error: demo path name too long.\n");
+	return;
+    }
 
-//
-// start the map up
-//
-    if (c > 2)
+    /* start the map up */
+    if (c > 2) {
 	Cmd_ExecuteString(va("map %s", Cmd_Argv(2)), src_command);
+	if (cls.state != ca_connected)
+	    return;
+    }
 
-//
-// open the demo file
-//
-    COM_DefaultExtension(name, ".dem");
-
+    /* open the demo file */
     Con_Printf("recording to %s.\n", name);
     cls.demofile = fopen(name, "wb");
     if (!cls.demofile) {
@@ -257,7 +262,6 @@ CL_Record_f(void)
     cls.demorecording = true;
 }
 
-
 /*
 ====================
 CL_PlayDemo_f
@@ -268,9 +272,8 @@ play [demoname]
 void
 CL_PlayDemo_f(void)
 {
-    char name[256];
-    int c;
-    qboolean neg = false;
+    char name[MAX_QPATH], forcetrack[12];
+    int i, c, err;
 
     if (cmd_source != src_command)
 	return;
@@ -287,29 +290,58 @@ CL_PlayDemo_f(void)
 //
 // open the demo file
 //
-    strcpy(name, Cmd_Argv(1));
-    COM_DefaultExtension(name, ".dem");
+    err = COM_DefaultExtension(Cmd_Argv(1), ".dem", name, sizeof(name));
+    if (err) {
+	Con_Printf("Error: demo filename too long\n");
+	cls.demonum = -1;	/* stop demo loop */
+	return;
+    }
 
     Con_Printf("Playing demo from %s.\n", name);
     COM_FOpenFile(name, &cls.demofile);
     if (!cls.demofile) {
 	Con_Printf("ERROR: couldn't open.\n");
-	cls.demonum = -1;	// stop demo loop
+	cls.demonum = -1;	/* stop demo loop */
 	return;
     }
 
+    /*
+     * Parse an integer for the demo CD track.  Pull the string out
+     * manually because fscanf can chew up a space following '\n'
+     * which can mess up the rest of the demo playback.  If we didn't
+     * find a newline within the first 12 characters, assume the demo
+     * file is invalid.
+     */
+    cls.forcetrack = 0;
+    for (i = 0; i < 12; i++) {
+	c = getc(cls.demofile);
+	forcetrack[i] = c & 127;
+	if (c == '\n')
+	    break;
+    }
+    if (c != '\n') {
+	Con_Printf("ERROR: demo \"%s\" is invalid\n", name);
+	goto error_out;
+    }
+
+    /* Terminate before the '\n' and parse the track number */
+    forcetrack[i] = 0;
+    i = sscanf(forcetrack, "%d", &cls.forcetrack);
+    if (i != 1) {
+	Con_Printf("Error: invalid cd track '%s' in demo %s\n",
+		   forcetrack, name);
+	goto error_out;
+    }
+
+    /* Continue with demo playback */
     cls.demoplayback = true;
     cls.state = ca_connected;
-    cls.forcetrack = 0;
+    return;
 
-    while ((c = getc(cls.demofile)) != '\n')
-	if (c == '-')
-	    neg = true;
-	else
-	    cls.forcetrack = cls.forcetrack * 10 + (c - '0');
-
-    if (neg)
-	cls.forcetrack = -cls.forcetrack;
+ error_out:
+    fclose(cls.demofile);
+    cls.demofile = NULL;
+    cls.demonum = -1;
 }
 
 struct stree_root *
@@ -369,6 +401,8 @@ CL_TimeDemo_f(void)
     }
 
     CL_PlayDemo_f();
+    if (!cls.demofile)
+	return;
 
 // cls.td_starttime will be grabbed at the second frame of the demo, so
 // all the loading time doesn't get counted

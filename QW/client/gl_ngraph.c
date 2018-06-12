@@ -26,9 +26,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "sbar.h"
 
-// FIXME - header hacks
-extern byte *draw_chars;
-
 GLuint netgraphtexture;		// netgraph texture
 
 #define NET_GRAPHHEIGHT 32
@@ -70,7 +67,7 @@ void
 Draw_CharToNetGraph(int x, int y, int num)
 {
     int row, col;
-    byte *source;
+    const byte *source;
     int drawline;
     int nx;
 
@@ -100,7 +97,6 @@ R_NetGraph(void)
     char st[80];
     unsigned ngraph_pixels[NET_GRAPHHEIGHT][NET_TIMINGS];
 
-    x = 0;
     lost = CL_CalcNet();
     for (a = 0; a < NET_TIMINGS; a++) {
 	i = (cls.netchan.outgoing_sequence - a) & NET_TIMINGSMASK;

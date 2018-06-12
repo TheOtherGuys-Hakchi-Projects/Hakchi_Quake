@@ -22,14 +22,12 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "client.h"
 #include "console.h"
 #include "mathlib.h"
+#include "model.h"
 #include "quakedef.h"
 #include "sound.h"
 #include "sys.h"
 
-#ifdef GLQUAKE
-#include "gl_model.h"
-#else
-#include "model.h"
+#ifndef GLQUAKE
 #include "d_iface.h"
 #endif
 
@@ -406,12 +404,10 @@ CL_UpdateBeams(void)
 	    ent->angles[1] = yaw;
 	    ent->angles[2] = rand() % 360;
 
-	    for (i = 0; i < 3; i++)
-		org[i] += dist[i] * 30;
+	    VectorMA(org, 30, dist, org);
 	    d -= 30;
 	}
     }
-
 }
 
 /*

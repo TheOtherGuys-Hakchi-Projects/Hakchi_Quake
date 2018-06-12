@@ -22,21 +22,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <float.h>
 
 #include "console.h"
-#include "gl_model.h"
 #include "glquake.h"
+#include "model.h"
+#include "qpic.h"
 #include "quakedef.h"
 #include "sys.h"
 
-// FIXME - header hacks
-extern model_t *loadmodel;
-extern cvar_t gl_subdivide_size;
+#ifdef NQ_HACK
+#include "host.h"
+#endif
 
 static float speedscale;	// for top sky and bottom sky
 static float speedscale2;	// for sky alpha layer using multitexture
 
-msurface_t *warpface;
-
-void
+static void
 BoundPoly(int numverts, float *verts, vec3_t mins, vec3_t maxs)
 {
     int i, j;
@@ -54,15 +53,16 @@ BoundPoly(int numverts, float *verts, vec3_t mins, vec3_t maxs)
 	}
 }
 
-void
-SubdividePolygon(int numverts, float *verts)
+static void
+SubdividePolygon(msurface_t *surf, int numverts, vec_t *verts,
+		 const char *hunkname)
 {
-    int i, j, k;
+    int i, j, k, memsize;
     vec3_t mins, maxs;
     float m;
     float *v;
     vec3_t front[64], back[64];
-    int f, b;
+    int front_count, back_count;
     float dist[64];
     float frac;
     glpoly_t *poly;
@@ -75,8 +75,8 @@ SubdividePolygon(int numverts, float *verts)
 
     for (i = 0; i < 3; i++) {
 	m = (mins[i] + maxs[i]) * 0.5;
-	m = gl_subdivide_size.value * floor(m / gl_subdivide_size.value +
-					    0.5);
+	m = floor(m / gl_subdivide_size.value + 0.5);
+	m *= gl_subdivide_size.value;
 	if (maxs[i] - m < 8)
 	    continue;
 	if (m - mins[i] < 8)
@@ -92,16 +92,16 @@ SubdividePolygon(int numverts, float *verts)
 	v -= i;
 	VectorCopy(verts, v);
 
-	f = b = 0;
+	front_count = back_count = 0;
 	v = verts;
 	for (j = 0; j < numverts; j++, v += 3) {
 	    if (dist[j] >= 0) {
-		VectorCopy(v, front[f]);
-		f++;
+		VectorCopy(v, front[front_count]);
+		front_count++;
 	    }
 	    if (dist[j] <= 0) {
-		VectorCopy(v, back[b]);
-		b++;
+		VectorCopy(v, back[back_count]);
+		back_count++;
 	    }
 	    if (dist[j] == 0 || dist[j + 1] == 0)
 		continue;
@@ -109,27 +109,27 @@ SubdividePolygon(int numverts, float *verts)
 		// clip point
 		frac = dist[j] / (dist[j] - dist[j + 1]);
 		for (k = 0; k < 3; k++)
-		    front[f][k] = back[b][k] =
+		    front[front_count][k] = back[back_count][k] =
 			v[k] + frac * (v[3 + k] - v[k]);
-		f++;
-		b++;
+		front_count++;
+		back_count++;
 	    }
 	}
 
-	SubdividePolygon(f, front[0]);
-	SubdividePolygon(b, back[0]);
+	SubdividePolygon(surf, front_count, front[0], hunkname);
+	SubdividePolygon(surf, back_count, back[0], hunkname);
 	return;
     }
 
-    poly =
-	Hunk_Alloc(sizeof(glpoly_t) + numverts * VERTEXSIZE * sizeof(float));
-    poly->next = warpface->polys;
-    warpface->polys = poly;
+    memsize = sizeof(*poly) + numverts * sizeof(poly->verts[0]);
+    poly = Hunk_AllocName(memsize, hunkname);
+    poly->next = surf->polys;
+    surf->polys = poly;
     poly->numverts = numverts;
     for (i = 0; i < numverts; i++, verts += 3) {
 	VectorCopy(verts, poly->verts[i]);
-	s = DotProduct(verts, warpface->texinfo->vecs[0]);
-	t = DotProduct(verts, warpface->texinfo->vecs[1]);
+	s = DotProduct(verts, surf->texinfo->vecs[0]);
+	t = DotProduct(verts, surf->texinfo->vecs[1]);
 	poly->verts[i][3] = s;
 	poly->verts[i][4] = t;
     }
@@ -145,32 +145,30 @@ can be done reasonably.
 ================
 */
 void
-GL_SubdivideSurface(msurface_t *fa)
+GL_SubdivideSurface(brushmodel_t *brushmodel, msurface_t *surf)
 {
-    vec3_t verts[64];
-    int numverts;
-    int i;
-    int lindex;
-    float *vec;
+    const model_t *model = &brushmodel->model;
+    char hunkname[HUNK_NAMELEN + 1];
+    vec3_t verts[64]; /* FIXME!!! */
+    int i, edge, numverts;
+    vec_t *vert;
 
-    warpface = fa;
+    COM_FileBase(model->name, hunkname, sizeof(hunkname));
 
     //
     // convert edges back to a normal polygon
     //
     numverts = 0;
-    for (i = 0; i < fa->numedges; i++) {
-	lindex = loadmodel->surfedges[fa->firstedge + i];
-
-	if (lindex > 0)
-	    vec = loadmodel->vertexes[loadmodel->edges[lindex].v[0]].position;
+    for (i = 0; i < surf->numedges; i++) {
+	edge = brushmodel->surfedges[surf->firstedge + i];
+	if (edge > 0)
+	    vert = brushmodel->vertexes[brushmodel->edges[edge].v[0]].position;
 	else
-	    vec =
-		loadmodel->vertexes[loadmodel->edges[-lindex].v[1]].position;
-	VectorCopy(vec, verts[numverts]);
+	    vert = brushmodel->vertexes[brushmodel->edges[-edge].v[1]].position;
+	VectorCopy(vert, verts[numverts]);
 	numverts++;
     }
-    SubdividePolygon(numverts, verts[0]);
+    SubdividePolygon(surf, numverts, verts[0], hunkname);
 }
 
 //=========================================================
@@ -397,56 +395,42 @@ A sky texture is 256*128, with the right side being a masked overlay
 void
 R_InitSky(texture_t *mt)
 {
-    int i, j, p;
-    byte *src;
-    unsigned trans[128 * 128];
-    unsigned transpix;
-    int r, g, b;
-    unsigned *rgba;
+    byte *src = (byte *)mt + mt->offsets[0];
+    qpic8_t pic;
+    qpic32_t *pic32;
+    int mark;
 
-    src = (byte *)mt + mt->offsets[0];
+    /* Set up the pic to describe the sky texture */
+    pic.width = 128;
+    pic.height = 128;
+    pic.stride = 256;
 
-    // make an average value for the back to avoid
-    // a fringe on the top level
+    mark = Hunk_LowMark();
+    pic32 = QPic32_Alloc(128, 128);
 
-    r = g = b = 0;
-    for (i = 0; i < 128; i++)
-	for (j = 0; j < 128; j++) {
-	    p = src[i * 256 + j + 128];
-	    rgba = &d_8to24table[p];
-	    trans[(i * 128) + j] = *rgba;
-	    r += ((byte *)rgba)[0];
-	    g += ((byte *)rgba)[1];
-	    b += ((byte *)rgba)[2];
-	}
+    /* Create the solid layer */
+    pic.pixels = src + 128;
+    QPic_8to32(&pic, pic32);
 
-    ((byte *)&transpix)[0] = r / (128 * 128);
-    ((byte *)&transpix)[1] = g / (128 * 128);
-    ((byte *)&transpix)[2] = b / (128 * 128);
-    ((byte *)&transpix)[3] = 0;
-
-    // FIXME - move this to some init function
     glGenTextures(1, &mt->gl_texturenum);
     GL_Bind(mt->gl_texturenum);
-    glTexImage2D(GL_TEXTURE_2D, 0, gl_solid_format, 128, 128, 0, GL_RGBA,
-		 GL_UNSIGNED_BYTE, trans);
+    glTexImage2D(GL_TEXTURE_2D, 0, gl_solid_format,
+		 128, 128, 0,
+		 GL_RGBA, GL_UNSIGNED_BYTE, pic32->pixels);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-    for (i = 0; i < 128; i++)
-	for (j = 0; j < 128; j++) {
-	    p = src[i * 256 + j];
-	    if (p == 0)
-		trans[(i * 128) + j] = transpix;
-	    else
-		trans[(i * 128) + j] = d_8to24table[p];
-	}
+    /* Create the alpha layer */
+    pic.pixels = src;
+    QPic_8to32_Alpha(&pic, pic32, 0);
 
-    // FIXME - move this to an init function...
     glGenTextures(1, &mt->gl_texturenum_alpha);
     GL_Bind(mt->gl_texturenum_alpha);
-    glTexImage2D(GL_TEXTURE_2D, 0, gl_alpha_format, 128, 128, 0, GL_RGBA,
-		 GL_UNSIGNED_BYTE, trans);
+    glTexImage2D(GL_TEXTURE_2D, 0, gl_alpha_format,
+		 128, 128, 0,
+		 GL_RGBA, GL_UNSIGNED_BYTE, pic32->pixels);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    Hunk_FreeToLowMark(mark);
 }

@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "input.h"
 #include "keys.h"
 #include "menu.h"
+#include "model.h"
 #include "net.h"
 #include "protocol.h"
 #include "quakedef.h"
@@ -39,13 +40,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "wad.h"
 
 #ifdef GLQUAKE
-#include "gl_model.h"
+#include "glquake.h"
 #else
 #include "r_local.h"
+#include "render.h"
 #endif
 
 /*
- * A server can allways be started, even if the system started out as a client
+ * A server can always be started, even if the system started out as a client
  * to a remote system.
  *
  * A client can NOT be started if the system started as a dedicated server.
@@ -54,6 +56,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * end.
  */
 
+wad_t host_gfx; /* "gfx.wad" */
+
 quakeparms_t host_parms;
 
 qboolean host_initialized;	// true if into command execution
@@ -61,16 +65,16 @@ qboolean host_initialized;	// true if into command execution
 double host_frametime;
 double host_time;
 double realtime;		// without any filtering or bounding
-double oldrealtime;		// last frame run
+static double oldrealtime;	// last frame run
 int host_framecount;
 
 int host_hunklevel;
 
 int minimum_memory;
 
-client_t *host_client;		// current client
+int fps_count;
 
-jmp_buf host_abortserver;
+static jmp_buf host_abort;
 
 byte *host_basepal;
 byte *host_colormap;
@@ -126,7 +130,7 @@ Host_EndGame(const char *message, ...)
     else
 	CL_Disconnect();
 
-    longjmp(host_abortserver, 1);
+    longjmp(host_abort, 1);
 }
 
 /*
@@ -165,7 +169,7 @@ Host_Error(const char *error, ...)
 
     inerror = false;
 
-    longjmp(host_abortserver, 1);
+    longjmp(host_abort, 1);
 }
 
 /*
@@ -280,10 +284,6 @@ Host_WriteConfiguration(void)
 	Key_WriteBindings(f);
 	Cvar_WriteVariables(f);
 
-	/* Save the mlook state (rarely used as an actual key binding) */
-	if (in_mlook.state & 1)
-	    fprintf(f, "+mlook\n");
-
 	fclose(f);
     }
 }
@@ -298,17 +298,14 @@ FIXME: make this just a stuffed echo?
 =================
 */
 void
-SV_ClientPrintf(const char *fmt, ...)
+SV_ClientPrintf(client_t *client, const char *fmt, ...)
 {
     va_list argptr;
-    char string[MAX_PRINTMSG];
 
+    MSG_WriteByte(&client->message, svc_print);
     va_start(argptr, fmt);
-    vsnprintf(string, sizeof(string), fmt, argptr);
+    MSG_WriteStringvf(&client->message, fmt, argptr);
     va_end(argptr);
-
-    MSG_WriteByte(&host_client->message, svc_print);
-    MSG_WriteString(&host_client->message, string);
 }
 
 /*
@@ -322,17 +319,14 @@ void
 SV_BroadcastPrintf(const char *fmt, ...)
 {
     va_list argptr;
-    char string[MAX_PRINTMSG];
     int i;
-
-    va_start(argptr, fmt);
-    vsnprintf(string, sizeof(string), fmt, argptr);
-    va_end(argptr);
 
     for (i = 0; i < svs.maxclients; i++)
 	if (svs.clients[i].active && svs.clients[i].spawned) {
 	    MSG_WriteByte(&svs.clients[i].message, svc_print);
-	    MSG_WriteString(&svs.clients[i].message, string);
+	    va_start(argptr, fmt);
+	    MSG_WriteStringvf(&svs.clients[i].message, fmt, argptr);
+	    va_end(argptr);
 	}
 }
 
@@ -344,17 +338,14 @@ Send text over to the client to be executed
 =================
 */
 void
-Host_ClientCommands(const char *fmt, ...)
+Host_ClientCommands(client_t *client, const char *fmt, ...)
 {
     va_list argptr;
-    char string[MAX_PRINTMSG];
 
+    MSG_WriteByte(&client->message, svc_stufftext);
     va_start(argptr, fmt);
-    vsnprintf(string, sizeof(string), fmt, argptr);
+    MSG_WriteStringvf(&client->message, fmt, argptr);
     va_end(argptr);
-
-    MSG_WriteByte(&host_client->message, svc_stufftext);
-    MSG_WriteString(&host_client->message, string);
 }
 
 /*
@@ -366,54 +357,54 @@ if (crash = true), don't bother sending signofs
 =====================
 */
 void
-SV_DropClient(qboolean crash)
+SV_DropClient(client_t *client, qboolean crash)
 {
-    int saveSelf;
     int i;
-    client_t *client;
+    client_t *notify;
 
     if (!crash) {
-	// send any final messages (don't check for errors)
-	if (NET_CanSendMessage(host_client->netconnection)) {
-	    MSG_WriteByte(&host_client->message, svc_disconnect);
-	    NET_SendMessage(host_client->netconnection,
-			    &host_client->message);
+	/* send any final messages (don't check for errors) */
+	if (NET_CanSendMessage(client->netconnection)) {
+	    MSG_WriteByte(&client->message, svc_disconnect);
+	    NET_SendMessage(client->netconnection, &client->message);
 	}
-
-	if (host_client->edict && host_client->spawned) {
-	    // call the prog function for removing a client
-	    // this will set the body to a dead frame, among other things
-	    saveSelf = pr_global_struct->self;
-	    pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
+	if (client->edict && client->spawned) {
+	    /*
+	     * call the prog function for removing a client
+	     * this will set the body to a dead frame, among other things
+	     */
+	    const int save_self = pr_global_struct->self;
+	    pr_global_struct->self = EDICT_TO_PROG(client->edict);
 	    PR_ExecuteProgram(pr_global_struct->ClientDisconnect);
-	    pr_global_struct->self = saveSelf;
+	    pr_global_struct->self = save_self;
 	}
-
-	Sys_Printf("Client %s removed\n", host_client->name);
+	Sys_Printf("Client %s removed\n", client->name);
     }
-// break the net connection
-    NET_Close(host_client->netconnection);
-    host_client->netconnection = NULL;
 
-// free the client (the body stays around)
-    host_client->active = false;
-    host_client->name[0] = 0;
-    host_client->old_frags = -999999;
+    /* break the net connection */
+    NET_Close(client->netconnection);
+    client->netconnection = NULL;
+
+    /* free the client (the body stays around) */
+    client->active = false;
+    client->name[0] = 0;
+    client->old_frags = -999999;
     net_activeconnections--;
 
-// send notification to all clients
-    for (i = 0, client = svs.clients; i < svs.maxclients; i++, client++) {
+    /* send notification to all clients */
+    notify = svs.clients;
+    for (i = 0; i < svs.maxclients; i++, notify++) {
 	if (!client->active)
 	    continue;
-	MSG_WriteByte(&client->message, svc_updatename);
-	MSG_WriteByte(&client->message, host_client - svs.clients);
-	MSG_WriteString(&client->message, "");
-	MSG_WriteByte(&client->message, svc_updatefrags);
-	MSG_WriteByte(&client->message, host_client - svs.clients);
-	MSG_WriteShort(&client->message, 0);
-	MSG_WriteByte(&client->message, svc_updatecolors);
-	MSG_WriteByte(&client->message, host_client - svs.clients);
-	MSG_WriteByte(&client->message, 0);
+	MSG_WriteByte(&notify->message, svc_updatename);
+	MSG_WriteByte(&notify->message, client - svs.clients);
+	MSG_WriteString(&notify->message, "");
+	MSG_WriteByte(&notify->message, svc_updatefrags);
+	MSG_WriteByte(&notify->message, client - svs.clients);
+	MSG_WriteShort(&notify->message, 0);
+	MSG_WriteByte(&notify->message, svc_updatecolors);
+	MSG_WriteByte(&notify->message, client - svs.clients);
+	MSG_WriteByte(&notify->message, 0);
     }
 }
 
@@ -427,8 +418,8 @@ This only happens at the end of a game, not between levels
 void
 Host_ShutdownServer(qboolean crash)
 {
-    int i;
-    int count;
+    client_t *client;
+    int i, count;
     sizebuf_t buf;
     byte message[4];
     double start;
@@ -438,32 +429,31 @@ Host_ShutdownServer(qboolean crash)
 
     sv.active = false;
 
-// stop all client sounds immediately
+    /* stop all client sounds immediately */
     if (cls.state >= ca_connected)
 	CL_Disconnect();
 
-// flush any pending messages - like the score!!!
+    /* flush any pending messages - like the score!!! */
     start = Sys_DoubleTime();
     do {
 	count = 0;
-	for (i = 0, host_client = svs.clients; i < svs.maxclients;
-	     i++, host_client++) {
-	    if (host_client->active && host_client->message.cursize) {
-		if (NET_CanSendMessage(host_client->netconnection)) {
-		    NET_SendMessage(host_client->netconnection,
-				    &host_client->message);
-		    SZ_Clear(&host_client->message);
-		} else {
-		    NET_GetMessage(host_client->netconnection);
-		    count++;
-		}
+	client = svs.clients;
+	for (i = 0; i < svs.maxclients; i++, client++) {
+	    if (!client->active || !client->message.cursize)
+		continue;
+	    if (NET_CanSendMessage(client->netconnection)) {
+		NET_SendMessage(client->netconnection, &client->message);
+		SZ_Clear(&client->message);
+	    } else {
+		NET_GetMessage(client->netconnection);
+		count++;
 	    }
 	}
 	if ((Sys_DoubleTime() - start) > 3.0)
 	    break;
     } while (count);
 
-// make sure all the clients know we're disconnecting
+    /* make sure all the clients know we're disconnecting */
     buf.data = message;
     buf.maxsize = 4;
     buf.cursize = 0;
@@ -473,14 +463,12 @@ Host_ShutdownServer(qboolean crash)
 	Con_Printf("%s: NET_SendToAll failed for %u clients\n", __func__,
 		   count);
 
-    for (i = 0, host_client = svs.clients; i < svs.maxclients;
-	 i++, host_client++)
-	if (host_client->active)
-	    SV_DropClient(crash);
+    client = svs.clients;
+    for (i = 0; i < svs.maxclients; i++, client++)
+	if (client->active)
+	    SV_DropClient(client, crash);
 
-//
-// clear structures
-//
+    /* clear structures */
     memset(&sv, 0, sizeof(sv));
     memset(svs.clients, 0, svs.maxclientslimit * sizeof(client_t));
 }
@@ -559,7 +547,7 @@ Host_GetConsoleCommands(void)
 	cmd = Sys_ConsoleInput();
 	if (!cmd)
 	    break;
-	Cbuf_AddText(cmd);
+	Cbuf_AddText("%s", cmd);
     }
 }
 
@@ -664,7 +652,7 @@ _Host_Frame(float time)
     int pass1, pass2, pass3;
 
     /* something bad happened, or the server disconnected */
-    if (setjmp(host_abortserver))
+    if (setjmp(host_abort))
 	return;
 
     /* keep the random time dependent */
@@ -752,6 +740,7 @@ _Host_Frame(float time)
     }
 
     host_framecount++;
+    fps_count++;
 }
 
 void
@@ -809,7 +798,7 @@ Host_Init(quakeparms_t *parms)
     host_parms = *parms;
 
     if (parms->memsize < minimum_memory)
-	Sys_Error("Only %4.1f megs of memory available, can't execute game",
+	Sys_Error("Only %4.1f megs of memory reported, can't execute game",
 		  parms->memsize / (float)0x100000);
 
     com_argc = parms->argc;
@@ -820,14 +809,14 @@ Host_Init(quakeparms_t *parms)
     Cmd_Init();
     V_Init();
     Chase_Init();
-    COM_Init(parms->basedir);
+    COM_Init();
     Host_InitLocal();
-    W_LoadWadFile("gfx.wad");
+    W_LoadWadFile(&host_gfx, "gfx.wad");
     Key_Init();
     Con_Init();
     M_Init();
     PR_Init();
-    Mod_Init();
+    Mod_Init(R_ModelLoader());
     NET_Init();
     SV_Init();
 
@@ -837,10 +826,10 @@ Host_Init(quakeparms_t *parms)
     R_InitTextures();		// needed even for dedicated servers
 
     if (cls.state != ca_dedicated) {
-	host_basepal = (byte *)COM_LoadHunkFile("gfx/palette.lmp");
+	host_basepal = COM_LoadHunkFile("gfx/palette.lmp");
 	if (!host_basepal)
 	    Sys_Error("Couldn't load gfx/palette.lmp");
-	host_colormap = (byte *)COM_LoadHunkFile("gfx/colormap.lmp");
+	host_colormap = COM_LoadHunkFile("gfx/colormap.lmp");
 	if (!host_colormap)
 	    Sys_Error("Couldn't load gfx/colormap.lmp");
 
@@ -858,16 +847,19 @@ Host_Init(quakeparms_t *parms)
 
 	IN_Init();
     }
+    Mod_InitAliasCache();
 
     Hunk_AllocName(0, "-HOST_HUNKLEVEL-");
     host_hunklevel = Hunk_LowMark();
 
-    Cbuf_InsertText("exec quake.rc\n");
-    Cbuf_Execute();
-
     host_initialized = true;
-
     Sys_Printf("========Quake Initialized=========\n");
+
+    /* In case exec of quake.rc fails */
+    if (!setjmp(host_abort)) {
+	Cbuf_InsertText("exec quake.rc\n");
+	Cbuf_Execute();
+    }
 }
 
 

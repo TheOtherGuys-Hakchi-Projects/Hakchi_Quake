@@ -17,7 +17,8 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
-// d_edge.c
+
+#include <stdint.h>
 
 #include "d_local.h"
 #include "quakedef.h"
@@ -33,19 +34,6 @@ static vec3_t transformed_modelorg;
 float scale_for_mip;
 int screenwidth;
 int ubasestep, errorterm, erroradjustup, erroradjustdown;
-
-/*
-==============
-D_DrawPoly
-
-==============
-*/
-void
-D_DrawPoly(void)
-{
-// this driver takes spans, not polygons
-}
-
 
 /*
 =============
@@ -121,13 +109,10 @@ D_CalcGradients
 static void
 D_CalcGradients(msurface_t *pface)
 {
-    mplane_t *pplane;
     float mipscale;
     vec3_t p_temp1;
     vec3_t p_saxis, p_taxis;
     float t;
-
-    pplane = pface->plane;
 
     mipscale = 1.0 / (float)(1 << miplevel);
 
@@ -173,13 +158,14 @@ D_DrawSurfaces
 void
 D_DrawSurfaces(void)
 {
+    const entity_t *e;
     surf_t *s;
     msurface_t *pface;
     surfcache_t *pcurrentcache;
     vec3_t world_transformed_modelorg;
     vec3_t local_modelorg;
 
-    currententity = &r_worldentity;
+    e = &r_worldentity;
     TransformVector(modelorg, transformed_modelorg);
     VectorCopy(transformed_modelorg, world_transformed_modelorg);
 
@@ -193,7 +179,7 @@ D_DrawSurfaces(void)
 	    d_zistepv = s->d_zistepv;
 	    d_ziorigin = s->d_ziorigin;
 
-	    D_DrawSolidSurface(s, (unsigned long)s->data & 0xFF);
+	    D_DrawSolidSurface(s, (intptr_t)s->data & 0xFF);
 	    D_DrawZSpans(s->spans);
 	}
     } else {
@@ -234,13 +220,12 @@ D_DrawSurfaces(void)
 		if (s->insubmodel) {
 		    // FIXME: we don't want to do all this for every polygon!
 		    // TODO: store once at start of frame
-		    currententity = s->entity;	//FIXME: make this passed in to
+		    e = s->entity;	//FIXME: make this passed in to
 		    // R_RotateBmodel ()
-		    VectorSubtract(r_origin, currententity->origin,
-				   local_modelorg);
+		    VectorSubtract(r_origin, e->origin, local_modelorg);
 		    TransformVector(local_modelorg, transformed_modelorg);
 
-		    R_RotateBmodel();	// FIXME: don't mess with the frustum,
+		    R_RotateBmodel(e);	// FIXME: don't mess with the frustum,
 		    // make entity passed in
 		}
 
@@ -254,7 +239,7 @@ D_DrawSurfaces(void)
 		    // FIXME: we don't want to do this every time!
 		    // TODO: speed up
 		    //
-		    currententity = &r_worldentity;
+		    e = &r_worldentity;
 		    VectorCopy(world_transformed_modelorg,
 			       transformed_modelorg);
 		    VectorCopy(base_vpn, vpn);
@@ -267,13 +252,12 @@ D_DrawSurfaces(void)
 		if (s->insubmodel) {
 		    // FIXME: we don't want to do all this for every polygon!
 		    // TODO: store once at start of frame
-		    currententity = s->entity;	//FIXME: make this passed in to
+		    e = s->entity;	//FIXME: make this passed in to
 		    // R_RotateBmodel ()
-		    VectorSubtract(r_origin, currententity->origin,
-				   local_modelorg);
+		    VectorSubtract(r_origin, e->origin, local_modelorg);
 		    TransformVector(local_modelorg, transformed_modelorg);
 
-		    R_RotateBmodel();	// FIXME: don't mess with the frustum,
+		    R_RotateBmodel(e);	// FIXME: don't mess with the frustum,
 		    // make entity passed in
 		}
 
@@ -282,15 +266,13 @@ D_DrawSurfaces(void)
 					      * pface->texinfo->mipadjust);
 
 		// FIXME: make this passed in to D_CacheSurface
-		pcurrentcache = D_CacheSurface(pface, miplevel);
+		pcurrentcache = D_CacheSurface(e, pface, miplevel);
 
 		cacheblock = (pixel_t *)pcurrentcache->data;
 		cachewidth = pcurrentcache->width;
 
 		D_CalcGradients(pface);
-
-		(*d_drawspans) (s->spans);
-
+		D_DrawSpans(s->spans);
 		D_DrawZSpans(s->spans);
 
 		if (s->insubmodel) {
@@ -299,7 +281,7 @@ D_DrawSurfaces(void)
 		    // FIXME: we don't want to do this every time!
 		    // TODO: speed up
 		    //
-		    currententity = &r_worldentity;
+		    e = &r_worldentity;
 		    VectorCopy(world_transformed_modelorg,
 			       transformed_modelorg);
 		    VectorCopy(base_vpn, vpn);

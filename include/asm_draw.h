@@ -72,10 +72,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define et_prev		8
 #define et_next		12
 #define et_surfs	16
-#define et_nextremove	20
-#define et_nearzi	24
-#define et_owner	28
-#define et_size		32
+#define et_nextremove	24
+#define et_nearzi	28
+#define et_owner	32
+#define et_size		36
 
 // surf_t structure
 // !!! if this is changed, it must be changed in r_shared.h too !!!
@@ -99,19 +99,22 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 // clipplane_t structure
 // !!! if this is changed, it must be changed in r_local.h too !!!
-#define cp_normal	0
-#define cp_dist		12
-#define cp_next		16
-#define cp_leftedge	20
-#define cp_rightedge	21
-#define cp_reserved	22
-#define cp_size		24
+#define cp_pnormal	0
+#define cp_pdist	12
+#define cp_ptype	16
+#define cp_psignbits	17
+#define cp_ppad		18
+#define cp_next		20
+#define cp_leftedge	24
+#define cp_rightedge	25
+#define cp_reserved	26
+#define cp_size		28
 
 // medge_t structure
 // !!! if this is changed, it must be changed in model.h too !!!
 #define me_v			0
-#define me_cachededgeoffset	4
-#define me_size			8
+#define me_cachededgeoffset	8
+#define me_size			12
 
 // mvertex_t structure
 // !!! if this is changed, it must be changed in model.h too !!!

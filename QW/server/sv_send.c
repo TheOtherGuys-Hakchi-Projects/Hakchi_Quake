@@ -17,15 +17,12 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
-// sv_main.c -- server main program
+// sv_send.c
 
 #include "model.h"
 #include "qwsvdef.h"
 #include "server.h"
 #include "sys.h"
-
-// FIXME - header hacks
-extern cvar_t sv_phs;
 
 #define CHAN_AUTO   0
 #define CHAN_WEAPON 1
@@ -41,17 +38,18 @@ Con_Printf redirection
 =============================================================================
 */
 
-char outputbuf[8000];
+static char outputbuf[8000];
 
 redirect_t sv_redirected;
+static client_t *sv_redirected_client;
 
 /*
 ==================
 SV_FlushRedirect
 ==================
 */
-void
-SV_FlushRedirect(void)
+static void
+SV_FlushRedirect(client_t *client)
 {
     char send[8000 + 6];
 
@@ -65,10 +63,10 @@ SV_FlushRedirect(void)
 
 	NET_SendPacket(strlen(send) + 1, send, net_from);
     } else if (sv_redirected == RD_CLIENT) {
-	ClientReliableWrite_Begin(host_client, svc_print,
+	ClientReliableWrite_Begin(client, svc_print,
 				  strlen(outputbuf) + 3);
-	ClientReliableWrite_Byte(host_client, PRINT_HIGH);
-	ClientReliableWrite_String(host_client, outputbuf);
+	ClientReliableWrite_Byte(client, PRINT_HIGH);
+	ClientReliableWrite_String(client, outputbuf);
     }
     // clear it
     outputbuf[0] = 0;
@@ -84,16 +82,17 @@ SV_BeginRedirect
 ==================
 */
 void
-SV_BeginRedirect(redirect_t rd)
+SV_BeginRedirect(redirect_t rd, client_t *client)
 {
     sv_redirected = rd;
+    sv_redirected_client = (rd == RD_CLIENT) ? client : NULL;
     outputbuf[0] = 0;
 }
 
 void
 SV_EndRedirect(void)
 {
-    SV_FlushRedirect();
+    SV_FlushRedirect(sv_redirected_client);
     sv_redirected = RD_NONE;
 }
 
@@ -118,7 +117,7 @@ Con_Printf(const char *fmt, ...)
     // add to redirected message
     if (sv_redirected) {
 	if (strlen(msg) + strlen(outputbuf) > sizeof(outputbuf) - 1)
-	    SV_FlushRedirect();
+	    SV_FlushRedirect(sv_redirected_client);
 	strcat(outputbuf, msg);
 	return;
     }
@@ -262,37 +261,34 @@ void
 SV_Multicast(vec3_t origin, int to)
 {
     client_t *client;
-    byte *mask;
+    const leafbits_t *mask;
     mleaf_t *leaf;
-    int leafnum;
-    int j;
-    qboolean reliable;
+    int i, leafnum;
+    qboolean reliable = false;
 
-    leaf = Mod_PointInLeaf(origin, sv.worldmodel);
-    if (!leaf)
-	leafnum = 0;
-    else
-	leafnum = leaf - sv.worldmodel->leafs;
-
-    reliable = false;
+    leaf = Mod_PointInLeaf(sv.worldmodel, origin);
+    if (!leaf && to != MULTICAST_ALL_R && to != MULTICAST_ALL)
+	return;
 
     switch (to) {
     case MULTICAST_ALL_R:
 	reliable = true;	// intentional fallthrough
     case MULTICAST_ALL:
-	mask = sv.pvs;		// leaf 0 is everything;
+	mask = sv.pvs[0];	// leaf 0 is everything;
 	break;
 
     case MULTICAST_PHS_R:
 	reliable = true;	// intentional fallthrough
     case MULTICAST_PHS:
-	mask = sv.phs + leafnum * 4 * ((sv.worldmodel->numleafs + 31) >> 5);
+	if (leaf == sv.worldmodel->leafs)
+	    return;		/* should never happen */
+	mask = sv.phs[leaf - sv.worldmodel->leafs - 1];
 	break;
 
     case MULTICAST_PVS_R:
 	reliable = true;	// intentional fallthrough
     case MULTICAST_PVS:
-	mask = sv.pvs + leafnum * 4 * ((sv.worldmodel->numleafs + 31) >> 5);
+	mask = sv.pvs[leaf - sv.worldmodel->leafs];
 	break;
 
     default:
@@ -301,24 +297,24 @@ SV_Multicast(vec3_t origin, int to)
     }
 
     // send the data to all relevent clients
-    for (j = 0, client = svs.clients; j < MAX_CLIENTS; j++, client++) {
+    client = svs.clients;
+    for (i = 0; i < MAX_CLIENTS; i++, client++) {
 	if (client->state != cs_spawned)
 	    continue;
 
 	if (to == MULTICAST_PHS_R || to == MULTICAST_PHS) {
 	    vec3_t delta;
-
 	    VectorSubtract(origin, client->edict->v.origin, delta);
 	    if (Length(delta) <= 1024)
 		goto inrange;
 	}
 
-	leaf = Mod_PointInLeaf(client->edict->v.origin, sv.worldmodel);
+	leaf = Mod_PointInLeaf(sv.worldmodel, client->edict->v.origin);
 	if (leaf) {
 	    // -1 is because pvs rows are 1 based, not 0 based like leafs
 	    leafnum = leaf - sv.worldmodel->leafs - 1;
-	    if (!(mask[leafnum >> 3] & (1 << (leafnum & 7)))) {
-//                              Con_Printf ("supressed multicast\n");
+	    if (!Mod_TestLeafBit(mask, leafnum)) {
+//		Con_Printf ("supressed multicast\n");
 		continue;
 	    }
 	}
@@ -345,7 +341,7 @@ Each entity can have eight independant sound sources, like voice,
 weapon, feet, etc.
 
 Channel 0 is an auto-allocate channel, the others override anything
-allready running on that entity/channel pair.
+already running on that entity/channel pair.
 
 An attenuation of 0 will play full volume everywhere in the level.
 Larger attenuations will drop off.  (max 4 attenuation)
@@ -353,11 +349,10 @@ Larger attenuations will drop off.  (max 4 attenuation)
 ==================
 */
 void
-SV_StartSound(edict_t *entity, int channel, char *sample, int volume,
+SV_StartSound(edict_t *entity, int channel, const char *sample, int volume,
 	      float attenuation)
 {
     int sound_num;
-    int field_mask;
     int i;
     int ent;
     vec3_t origin;
@@ -400,7 +395,6 @@ SV_StartSound(edict_t *entity, int channel, char *sample, int volume,
 
     channel = (ent << 3) | channel;
 
-    field_mask = 0;
     if (volume != DEFAULT_SOUND_PACKET_VOLUME)
 	channel |= SND_VOLUME;
     if (attenuation != DEFAULT_SOUND_PACKET_ATTENUATION)
@@ -517,7 +511,7 @@ Performs a delta update of the stats array.  This should only be performed
 when a reliable message can be delivered this frame.
 =======================
 */
-void
+static void
 SV_UpdateClientStats(client_t *client)
 {
     edict_t *ent;
@@ -566,7 +560,7 @@ SV_UpdateClientStats(client_t *client)
 SV_SendClientDatagram
 =======================
 */
-qboolean
+static qboolean
 SV_SendClientDatagram(client_t *client)
 {
     byte buf[MAX_DATAGRAM];
@@ -613,68 +607,72 @@ SV_SendClientDatagram(client_t *client)
 SV_UpdateToReliableMessages
 =======================
 */
-void
+static void
 SV_UpdateToReliableMessages(void)
 {
     int i, j;
-    client_t *client;
+    client_t *client, *recipient;
     eval_t *val;
-    edict_t *ent;
+    edict_t *player;
+    sizebuf_t *buf;
 
-// check for changes to be sent over the reliable streams to all clients
-    for (i = 0, host_client = svs.clients; i < MAX_CLIENTS;
-	 i++, host_client++) {
-	if (host_client->state != cs_spawned)
+    /*
+     * Check for changes to be sent over the reliable streams to all clients
+     */
+    client = svs.clients;
+    for (i = 0; i < MAX_CLIENTS; i++, client++) {
+	if (client->state != cs_spawned)
 	    continue;
-	if (host_client->sendinfo) {
-	    host_client->sendinfo = false;
-	    SV_FullClientUpdate(host_client, &sv.reliable_datagram);
+	if (client->sendinfo) {
+	    client->sendinfo = false;
+	    SV_FullClientUpdate(client, &sv.reliable_datagram);
 	}
-	if (host_client->old_frags != host_client->edict->v.frags) {
-	    for (j = 0, client = svs.clients; j < MAX_CLIENTS; j++, client++) {
-		if (client->state < cs_connected)
+	player = client->edict;
+	if (client->old_frags != player->v.frags) {
+	    recipient = svs.clients;
+	    for (j = 0; j < MAX_CLIENTS; j++, recipient++) {
+		if (recipient->state < cs_connected)
 		    continue;
-		ClientReliableWrite_Begin(client, svc_updatefrags, 4);
-		ClientReliableWrite_Byte(client, i);
-		ClientReliableWrite_Short(client,
-					  host_client->edict->v.frags);
+		ClientReliableWrite_Begin(recipient, svc_updatefrags, 4);
+		ClientReliableWrite_Byte(recipient, i);
+		ClientReliableWrite_Short(recipient, player->v.frags);
 	    }
-
-	    host_client->old_frags = host_client->edict->v.frags;
-	}
-	// maxspeed/entgravity changes
-	ent = host_client->edict;
-
-	val = GetEdictFieldValue(ent, "gravity");
-	if (val && host_client->entgravity != val->_float) {
-	    host_client->entgravity = val->_float;
-	    ClientReliableWrite_Begin(host_client, svc_entgravity, 5);
-	    ClientReliableWrite_Float(host_client, host_client->entgravity);
-	}
-	val = GetEdictFieldValue(ent, "maxspeed");
-	if (val && host_client->maxspeed != val->_float) {
-	    host_client->maxspeed = val->_float;
-	    ClientReliableWrite_Begin(host_client, svc_maxspeed, 5);
-	    ClientReliableWrite_Float(host_client, host_client->maxspeed);
+	    client->old_frags = player->v.frags;
 	}
 
+	/* maxspeed/entgravity changes */
+	val = GetEdictFieldValue(player, "gravity");
+	if (val && client->entgravity != val->_float) {
+	    client->entgravity = val->_float;
+	    ClientReliableWrite_Begin(client, svc_entgravity, 5);
+	    ClientReliableWrite_Float(client, client->entgravity);
+	}
+	val = GetEdictFieldValue(player, "maxspeed");
+	if (val && client->maxspeed != val->_float) {
+	    client->maxspeed = val->_float;
+	    ClientReliableWrite_Begin(client, svc_maxspeed, 5);
+	    ClientReliableWrite_Float(client, client->maxspeed);
+	}
     }
 
     if (sv.datagram.overflowed)
 	SZ_Clear(&sv.datagram);
 
-    // append the broadcast messages to each client messages
-    for (j = 0, client = svs.clients; j < MAX_CLIENTS; j++, client++) {
-	if (client->state < cs_connected)
-	    continue;		// reliables go to all connected or spawned
+    /* append the broadcast messages to each client messages */
+    recipient = svs.clients;
+    for (j = 0; j < MAX_CLIENTS; j++, recipient++) {
+	/* reliables go to all connected or spawned */
+	if (recipient->state < cs_connected)
+	    continue;
 
-	ClientReliableCheckBlock(client, sv.reliable_datagram.cursize);
-	ClientReliableWrite_SZ(client, sv.reliable_datagram.data,
-			       sv.reliable_datagram.cursize);
+	buf = &sv.reliable_datagram;
+	ClientReliableCheckBlock(recipient, buf->cursize);
+	ClientReliableWrite_SZ(recipient, buf->data, buf->cursize);
 
-	if (client->state != cs_spawned)
-	    continue;		// datagrams only go to spawned
-	SZ_Write(&client->datagram, sv.datagram.data, sv.datagram.cursize);
+	/* datagrams only go to spawned */
+	if (recipient->state != cs_spawned)
+	    continue;
+	SZ_Write(&recipient->datagram, sv.datagram.data, sv.datagram.cursize);
     }
 
     SZ_Clear(&sv.reliable_datagram);

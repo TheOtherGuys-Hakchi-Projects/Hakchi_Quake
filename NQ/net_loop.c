@@ -71,7 +71,7 @@ Loop_SearchForHosts(qboolean xmit)
 
 
 qsocket_t *
-Loop_Connect(char *host)
+Loop_Connect(const char *host)
 {
     if (strcmp(host, "local") != 0)
 	return NULL;
@@ -88,6 +88,7 @@ Loop_Connect(char *host)
     loop_client->receiveMessageLength = 0;
     loop_client->sendMessageLength = 0;
     loop_client->canSend = true;
+    loop_client->mtu = Loop_GetDefaultMTU();
 
     if (!loop_server) {
 	if ((loop_server = NET_NewQSocket()) == NULL) {
@@ -99,6 +100,7 @@ Loop_Connect(char *host)
     loop_server->receiveMessageLength = 0;
     loop_server->sendMessageLength = 0;
     loop_server->canSend = true;
+    loop_server->mtu = Loop_GetDefaultMTU();
 
     loop_client->driverdata = (void *)loop_server;
     loop_server->driverdata = (void *)loop_client;
@@ -161,7 +163,7 @@ Loop_GetMessage(qsocket_t *sock)
 
 
 int
-Loop_SendMessage(qsocket_t *sock, sizebuf_t *data)
+Loop_SendMessage(qsocket_t *sock, const sizebuf_t *data)
 {
     byte *buffer;
     int *bufferLength;
@@ -196,7 +198,7 @@ Loop_SendMessage(qsocket_t *sock, sizebuf_t *data)
 
 
 int
-Loop_SendUnreliableMessage(qsocket_t *sock, sizebuf_t *data)
+Loop_SendUnreliableMessage(qsocket_t *sock, const sizebuf_t *data)
 {
     byte *buffer;
     int *bufferLength;
@@ -257,4 +259,13 @@ Loop_Close(qsocket_t *sock)
 	loop_client = NULL;
     else
 	loop_server = NULL;
+}
+
+int
+Loop_GetDefaultMTU(void)
+{
+    /*
+     * The loop driver can send the maximum message size in one packet
+     */
+    return MAX_MSGLEN;
 }

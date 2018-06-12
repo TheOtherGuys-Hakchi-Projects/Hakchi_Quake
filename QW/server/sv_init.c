@@ -28,9 +28,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 server_static_t svs;		// persistant server info
 server_t sv;			// local server
 
-char localmodels[MAX_MODELS][5];	// inline model names for precache
+/* inline model names for precache */
+#define MODSTRLEN (sizeof("*" stringify(MAX_MODELS)) / sizeof(char))
+static char localmodels[MAX_MODELS][MODSTRLEN];
 
 char localinfo[MAX_LOCALINFO_STRING + 1];	// local game info
+
+void
+SV_ModelInit(void)
+{
+    int i;
+
+    for (i = 0; i < MAX_MODELS; i++)
+	snprintf(localmodels[i], sizeof(localmodels[i]), "*%d", i);
+}
 
 /*
 ================
@@ -39,7 +50,7 @@ SV_ModelIndex
 ================
 */
 int
-SV_ModelIndex(char *name)
+SV_ModelIndex(const char *name)
 {
     int i;
 
@@ -150,30 +161,32 @@ and each client for saving across the
 transition to another level
 ================
 */
-void
+static void
 SV_SaveSpawnparms(void)
 {
+    client_t *client;
     int i, j;
 
+    /* only run if progs loaded */
     if (!sv.state)
-	return;			// no progs loaded yet
+	return;
 
-    // serverflags is the only game related thing maintained
+    /* serverflags is the only game related thing maintained */
     svs.serverflags = pr_global_struct->serverflags;
 
-    for (i = 0, host_client = svs.clients; i < MAX_CLIENTS;
-	 i++, host_client++) {
-	if (host_client->state != cs_spawned)
+    client = svs.clients;
+    for (i = 0; i < MAX_CLIENTS; i++, client++) {
+	if (client->state != cs_spawned)
 	    continue;
 
-	// needs to reconnect
-	host_client->state = cs_connected;
+	/* client needs to reconnect */
+	client->state = cs_connected;
 
-	// call the progs to get default spawn parms for the new client
-	pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
+	/* call the progs to get default spawn parms for the new client */
+	pr_global_struct->self = EDICT_TO_PROG(client->edict);
 	PR_ExecuteProgram(pr_global_struct->SetChangeParms);
 	for (j = 0; j < NUM_SPAWN_PARMS; j++)
-	    host_client->spawn_parms[j] = (&pr_global_struct->parm1)[j];
+	    client->spawn_parms[j] = (&pr_global_struct->parm1)[j];
     }
 }
 
@@ -188,83 +201,81 @@ Expands the PVS and calculates the PHS
 void
 SV_CalcPHS(void)
 {
-    int rowbytes, rowwords;
-    int i, j, k, l, index, num;
-    int bitbyte;
-    unsigned *dest, *src;
-    byte *scan;
-    int count, vcount;
+    int numleafs;
+    size_t leafmem, pvsmem, phsmem;
+    int i, leafnum;
+    int vcount, hcount;
+    const leafbits_t *leafbits;
+    leafbits_t *pvs, *phs;
+    leafblock_t check;
 
     Con_Printf("Building PHS...\n");
 
-    num = sv.worldmodel->numleafs;
-    rowwords = (num + 31) >> 5;
-    rowbytes = rowwords * 4;
+    numleafs = sv.worldmodel->numleafs;
+    leafmem = Mod_LeafbitsSize(sv.worldmodel->numleafs);
 
-    sv.pvs = Hunk_Alloc(rowbytes * num);
-    scan = sv.pvs;
-    vcount = 0;
-    for (i = 0; i < num; i++, scan += rowbytes) {
-	memcpy(scan, Mod_LeafPVS(sv.worldmodel->leafs + i, sv.worldmodel),
-	       rowbytes);
-	if (i == 0)
-	    continue;
-	for (j = 0; j < num; j++) {
-	    if (scan[j >> 3] & (1 << (j & 7))) {
-		vcount++;
-	    }
-	}
+    /*
+     * Allocate space for an array of pointers, followed by the data.
+     * PVS is 1 based, so allocate one extra row
+     */
+    pvsmem = (sizeof(leafbits_t *) + leafmem) * (numleafs + 1);
+    phsmem = (sizeof(leafbits_t *) + leafmem) * numleafs;
+    sv.pvs = Hunk_AllocName(pvsmem, "pvs");
+    sv.phs = Hunk_AllocName(phsmem, "phs");
+    for (i = 0; i < numleafs + 1; i++) {
+	int offset = sizeof(leafbits_t *) * (numleafs + 1) + leafmem * i;
+	sv.pvs[i] = (leafbits_t *)((byte *)sv.pvs + offset);
+    }
+    for (i = 0; i < numleafs; i++) {
+	int offset = sizeof(leafbits_t *) * numleafs + leafmem * i;
+	sv.phs[i] = (leafbits_t *)((byte *)sv.phs + offset);
     }
 
-
-    sv.phs = Hunk_Alloc(rowbytes * num);
-    count = 0;
-    scan = sv.pvs;
-    dest = (unsigned *)sv.phs;
-    for (i = 0; i < num; i++, dest += rowwords, scan += rowbytes) {
-	memcpy(dest, scan, rowbytes);
-	for (j = 0; j < rowbytes; j++) {
-	    bitbyte = scan[j];
-	    if (!bitbyte)
-		continue;
-	    for (k = 0; k < 8; k++) {
-		if (!(bitbyte & (1 << k)))
-		    continue;
-		// or this pvs row into the phs
-		// +1 because pvs is 1 based
-		index = ((j << 3) + k + 1);
-		if (index >= num)
-		    continue;
-		src = (unsigned *)sv.pvs + index * rowwords;
-		for (l = 0; l < rowwords; l++)
-		    dest[l] |= src[l];
-	    }
-	}
-
-	if (i == 0)
+    vcount = 0;
+    for (i = 0; i < numleafs + 1; i++) {
+	pvs = sv.pvs[i];
+	leafbits = Mod_LeafPVS(sv.worldmodel, sv.worldmodel->leafs + i);
+	memcpy(pvs, leafbits, leafmem);
+	if (!i)
 	    continue;
-	for (j = 0; j < num; j++)
-	    if (((byte *)dest)[j >> 3] & (1 << (j & 7)))
-		count++;
+
+	vcount += Mod_CountLeafBits(pvs);
+    }
+
+    hcount = 0;
+    for (i = 0; i < numleafs; i++) {
+	pvs = sv.pvs[i];
+	phs = sv.phs[i];
+	memcpy(phs, pvs, leafmem);
+	if (!i)
+	    continue;
+
+	foreach_leafbit(pvs, leafnum, check) {
+	    /*
+	     * OR each visible pvs row into the phs
+	     * index is +1 because pvs is 1 based
+	     */
+	    if (leafnum + 1 >= numleafs)
+		continue;
+	    leafbits = sv.pvs[leafnum + 1];
+	    Mod_AddLeafBits(phs, leafbits);
+	}
+	hcount += Mod_CountLeafBits(phs);
     }
 
     Con_Printf("Average leafs visible / hearable / total: %i / %i / %i\n",
-	       vcount / num, count / num, num);
+	       vcount / numleafs, hcount / numleafs, numleafs);
 }
 
-unsigned
-SV_CheckModel(char *mdl)
+static unsigned
+SV_CheckModel(const char *mdl)
 {
     byte stackbuf[1024];	// avoid dirtying the cache heap
-    byte *buf;
+    const byte *buf;
     unsigned short crc;
 
-//      int len;
-
-    buf = (byte *)COM_LoadStackFile(mdl, stackbuf, sizeof(stackbuf), NULL);
+    buf = COM_LoadStackFile(mdl, stackbuf, sizeof(stackbuf), NULL);
     crc = CRC_Block(buf, com_filesize);
-//      for (len = com_filesize; len; len--, buf++)
-//              CRC_ProcessByte(&crc, *buf);
 
     return crc;
 }
@@ -280,8 +291,9 @@ This is only called from the SV_Map_f() function.
 ================
 */
 void
-SV_SpawnServer(char *server)
+SV_SpawnServer(const char *server)
 {
+    model_t *model;
     edict_t *ent;
     int i;
 
@@ -337,9 +349,10 @@ SV_SpawnServer(char *server)
 
     sv.time = 1.0;
 
-    strcpy(sv.name, server);
-    sprintf(sv.modelname, "maps/%s.bsp", server);
-    sv.worldmodel = Mod_ForName(sv.modelname, true);
+    snprintf(sv.name, sizeof(sv.name), "%s", server);
+    snprintf(sv.modelname, sizeof(sv.modelname), "maps/%s.bsp", server);
+    model = Mod_ForName(sv.modelname, true);
+    sv.worldmodel = BrushModel(model);
     SV_CalcPHS();
 
     //
@@ -351,7 +364,7 @@ SV_SpawnServer(char *server)
 
     sv.model_precache[0] = pr_strings;
     sv.model_precache[1] = sv.modelname;
-    sv.models[1] = sv.worldmodel;
+    sv.models[1] = &sv.worldmodel->model;
     for (i = 1; i < sv.worldmodel->numsubmodels; i++) {
 	sv.model_precache[1 + i] = localmodels[i];
 	sv.models[i + 1] = Mod_ForName(localmodels[i], false);
@@ -371,7 +384,7 @@ SV_SpawnServer(char *server)
 
     ent = EDICT_NUM(0);
     ent->free = false;
-    ent->v.model = PR_SetString(sv.worldmodel->name);
+    ent->v.model = PR_SetString(sv.worldmodel->model.name);
     ent->v.modelindex = 1;	// world model
     ent->v.solid = SOLID_BSP;
     ent->v.movetype = MOVETYPE_PUSH;

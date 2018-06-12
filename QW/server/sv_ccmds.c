@@ -25,11 +25,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "sys.h"
 #include "zone.h"
 
-// FIXME - header hacks
-extern cvar_t cl_warncmd;
-extern redirect_t sv_redirected;
-
-qboolean sv_allow_cheats;
+static qboolean sv_allow_cheats;
+static const char sv_cheatmsg[] =
+    "You must run the server with -cheats to enable this command.\n";
 
 int fp_messages = 4, fp_persecond = 4, fp_secondsdead = 10;
 char fp_msg[255] = { 0 };
@@ -50,7 +48,7 @@ SV_SetMaster_f
 Make a master server current
 ====================
 */
-void
+static void
 SV_SetMaster_f(void)
 {
     char data[2];
@@ -86,7 +84,7 @@ SV_SetMaster_f(void)
 SV_Quit_f
 ==================
 */
-void
+static void
 SV_Quit_f(void)
 {
     SV_FinalMessage("server shutdown\n");
@@ -100,7 +98,7 @@ SV_Quit_f(void)
 SV_Logfile_f
 ============
 */
-void
+static void
 SV_Logfile_f(void)
 {
     char name[MAX_OSPATH];
@@ -125,7 +123,7 @@ SV_Logfile_f(void)
 SV_Fraglogfile_f
 ============
 */
-void
+static void
 SV_Fraglogfile_f(void)
 {
     char name[MAX_OSPATH];
@@ -161,33 +159,25 @@ SV_Fraglogfile_f(void)
 
 /*
 ==================
-SV_SetPlayer
-
-Sets host_client and sv_player to the player with idnum Cmd_Argv(1)
+SV_GetClient
 ==================
 */
-qboolean
-SV_SetPlayer(void)
+static client_t *
+SV_GetClient(int clientid)
 {
-    client_t *cl;
+    client_t *client;
     int i;
-    int idnum;
 
-    idnum = atoi(Cmd_Argv(1));
-
-    for (i = 0, cl = svs.clients; i < MAX_CLIENTS; i++, cl++) {
-	if (!cl->state)
+    for (i = 0, client = svs.clients; i < MAX_CLIENTS; i++, client++) {
+	if (!client->state)
 	    continue;
-	if (cl->userid == idnum) {
-	    host_client = cl;
-	    sv_player = host_client->edict;
-	    return true;
-	}
+	if (client->userid == clientid)
+	    return client;
     }
-    Con_Printf("Userid %i is not on the server\n", idnum);
-    return false;
-}
+    Con_Printf("Userid %i is not on the server\n", clientid);
 
+    return NULL;
+}
 
 /*
 ==================
@@ -196,44 +186,52 @@ SV_God_f
 Sets client to godmode
 ==================
 */
-void
+static void
 SV_God_f(void)
 {
+    client_t *client;
+    edict_t *player;
+
     if (!sv_allow_cheats) {
-	Con_Printf
-	    ("You must run the server with -cheats to enable this command.\n");
+	Con_Printf(sv_cheatmsg);
 	return;
     }
 
-    if (!SV_SetPlayer())
+    client = SV_GetClient(atoi(Cmd_Argv(1)));
+    if (!client)
 	return;
 
-    sv_player->v.flags = (int)sv_player->v.flags ^ FL_GODMODE;
-    if (!((int)sv_player->v.flags & FL_GODMODE))
-	SV_ClientPrintf(host_client, PRINT_HIGH, "godmode OFF\n");
+    player = client->edict;
+    player->v.flags = (int)player->v.flags ^ FL_GODMODE;
+    if (!((int)player->v.flags & FL_GODMODE))
+	SV_ClientPrintf(client, PRINT_HIGH, "godmode OFF\n");
     else
-	SV_ClientPrintf(host_client, PRINT_HIGH, "godmode ON\n");
+	SV_ClientPrintf(client, PRINT_HIGH, "godmode ON\n");
 }
 
 
-void
+static void
 SV_Noclip_f(void)
 {
+    client_t *client;
+    edict_t *player;
+
     if (!sv_allow_cheats) {
-	Con_Printf
-	    ("You must run the server with -cheats to enable this command.\n");
+	Con_Printf(sv_cheatmsg);
 	return;
     }
 
-    if (!SV_SetPlayer())
+    client = SV_GetClient(atoi(Cmd_Argv(1)));
+    if (!client)
 	return;
 
-    if (sv_player->v.movetype != MOVETYPE_NOCLIP) {
-	sv_player->v.movetype = MOVETYPE_NOCLIP;
-	SV_ClientPrintf(host_client, PRINT_HIGH, "noclip ON\n");
+    player = client->edict;
+    if (player->v.movetype != MOVETYPE_NOCLIP) {
+	player->v.movetype = MOVETYPE_NOCLIP;
+	SV_ClientPrintf(client, PRINT_HIGH, "noclip ON\n");
     } else {
-	sv_player->v.movetype = MOVETYPE_WALK;
-	SV_ClientPrintf(host_client, PRINT_HIGH, "noclip OFF\n");
+	player->v.movetype = MOVETYPE_WALK;
+	SV_ClientPrintf(client, PRINT_HIGH, "noclip OFF\n");
     }
 }
 
@@ -243,25 +241,28 @@ SV_Noclip_f(void)
 SV_Give_f
 ==================
 */
-void
+static void
 SV_Give_f(void)
 {
-    char *t;
-    int v;
+    client_t *client;
+    edict_t *player;
+    char item;
+    int amount;
 
     if (!sv_allow_cheats) {
-	Con_Printf
-	    ("You must run the server with -cheats to enable this command.\n");
+	Con_Printf(sv_cheatmsg);
 	return;
     }
 
-    if (!SV_SetPlayer())
+    client = SV_GetClient(atoi(Cmd_Argv(1)));
+    if (!client)
 	return;
 
-    t = Cmd_Argv(2);
-    v = atoi(Cmd_Argv(3));
+    player = client->edict;
+    item = Cmd_Argv(2)[0];
+    amount = atoi(Cmd_Argv(3));
 
-    switch (t[0]) {
+    switch (item) {
     case '2':
     case '3':
     case '4':
@@ -270,24 +271,22 @@ SV_Give_f(void)
     case '7':
     case '8':
     case '9':
-	sv_player->v.items =
-	    (int)sv_player->v.items | IT_SHOTGUN << (t[0] - '2');
+	player->v.items = (int)player->v.items | IT_SHOTGUN << (item - '2');
 	break;
-
     case 's':
-	sv_player->v.ammo_shells = v;
+	player->v.ammo_shells = amount;
 	break;
     case 'n':
-	sv_player->v.ammo_nails = v;
+	player->v.ammo_nails = amount;
 	break;
     case 'r':
-	sv_player->v.ammo_rockets = v;
+	player->v.ammo_rockets = amount;
 	break;
     case 'h':
-	sv_player->v.health = v;
+	player->v.health = amount;
 	break;
     case 'c':
-	sv_player->v.ammo_cells = v;
+	player->v.ammo_cells = amount;
 	break;
     }
 }
@@ -302,7 +301,7 @@ map <mapname>
 command from the console or progs.
 ======================
 */
-void
+static void
 SV_Map_f(void)
 {
     char level[MAX_QPATH];
@@ -364,7 +363,7 @@ SV_Kick_f
 Kick a user off of the server
 ==================
 */
-void
+static void
 SV_Kick_f(void)
 {
     int i;
@@ -396,14 +395,13 @@ SV_Kick_f(void)
 SV_Status_f
 ================
 */
-void
+static void
 SV_Status_f(void)
 {
-    int i, j, l;
-    client_t *cl;
+    const char *addr;
+    int i;
+    client_t *client;
     float cpu, avg, pak;
-    char *s;
-
 
     cpu = (svs.stats.latched_active + svs.stats.latched_idle);
     if (cpu)
@@ -419,78 +417,60 @@ SV_Status_f(void)
 // min fps lat drp
     if (sv_redirected != RD_NONE) {
 	// most remote clients are 40 columns
-	//           0123456789012345678901234567890123456789
-	Con_Printf("name               userid frags\n");
-	Con_Printf("  address          rate ping drop\n");
-	Con_Printf("  ---------------- ---- ---- -----\n");
-	for (i = 0, cl = svs.clients; i < MAX_CLIENTS; i++, cl++) {
-	    if (!cl->state)
+	//          0123456789012345678901234567890123456789
+	Con_Printf("name               userid frags\n"
+		   "  address          rate ping drop\n"
+		   "  ---------------- ---- ---- -----\n");
+	for (i = 0, client = svs.clients; i < MAX_CLIENTS; i++, client++) {
+	    if (!client->state)
 		continue;
 
-	    Con_Printf("%-16.16s  ", cl->name);
+	    Con_Printf("%-16.16s  %6i %5i%s\n", client->name, client->userid,
+		       (int)client->edict->v.frags,
+		       client->spectator ? " (s)" : "");
 
-	    Con_Printf("%6i %5i", cl->userid, (int)cl->edict->v.frags);
-	    if (cl->spectator)
-		Con_Printf(" (s)\n");
-	    else
-		Con_Printf("\n");
-
-	    s = NET_BaseAdrToString(cl->netchan.remote_address);
-	    Con_Printf("  %-16.16s", s);
-	    if (cl->state == cs_connected) {
+	    addr = NET_BaseAdrToString(client->netchan.remote_address);
+	    Con_Printf("  %-16.16s ", addr);
+	    if (client->state == cs_connected) {
 		Con_Printf("CONNECTING\n");
 		continue;
 	    }
-	    if (cl->state == cs_zombie) {
+	    if (client->state == cs_zombie) {
 		Con_Printf("ZOMBIE\n");
 		continue;
 	    }
-	    Con_Printf("%4i %4i %5.2f\n", (int)(1000 * cl->netchan.frame_rate)
-		       , (int)SV_CalcPing(cl)
-		       ,
-		       100.0 * cl->netchan.drop_count /
-		       cl->netchan.incoming_sequence);
+	    Con_Printf("%4i %4i %5.2f\n",
+		       (int)(1000 * client->netchan.frame_rate),
+		       (int)SV_CalcPing(client),
+		       100.0 * client->netchan.drop_count /
+		       client->netchan.incoming_sequence);
 	}
     } else {
-	Con_Printf
-	    ("frags userid address         name            rate ping drop  qport\n");
-	Con_Printf
-	    ("----- ------ --------------- --------------- ---- ---- ----- -----\n");
-	for (i = 0, cl = svs.clients; i < MAX_CLIENTS; i++, cl++) {
-	    if (!cl->state)
+	Con_Printf("frags userid address         name            rate ping drop  qport\n");
+	Con_Printf("----- ------ --------------- --------------- ---- ---- ----- -----\n");
+	for (i = 0, client = svs.clients; i < MAX_CLIENTS; i++, client++) {
+	    if (!client->state)
 		continue;
-	    Con_Printf("%5i %6i ", (int)cl->edict->v.frags, cl->userid);
+	    addr = NET_BaseAdrToString(client->netchan.remote_address);
+	    Con_Printf("%5i %6i %-16.16s %-16.16s ",
+		       (int)client->edict->v.frags, client->userid, addr,
+		       client->name);
 
-	    s = NET_BaseAdrToString(cl->netchan.remote_address);
-	    Con_Printf("%s", s);
-	    l = 16 - strlen(s);
-	    for (j = 0; j < l; j++)
-		Con_Printf(" ");
-
-	    Con_Printf("%s", cl->name);
-	    l = 16 - strlen(cl->name);
-	    for (j = 0; j < l; j++)
-		Con_Printf(" ");
-	    if (cl->state == cs_connected) {
+	    if (client->state == cs_connected) {
 		Con_Printf("CONNECTING\n");
 		continue;
 	    }
-	    if (cl->state == cs_zombie) {
+	    if (client->state == cs_zombie) {
 		Con_Printf("ZOMBIE\n");
 		continue;
 	    }
-	    Con_Printf("%4i %4i %3.1f %4i",
-		       (int)(1000 * cl->netchan.frame_rate)
-		       , (int)SV_CalcPing(cl)
-		       ,
-		       100.0 * cl->netchan.drop_count /
-		       cl->netchan.incoming_sequence, cl->netchan.qport);
-	    if (cl->spectator)
-		Con_Printf(" (s)\n");
-	    else
-		Con_Printf("\n");
-
-
+	    Con_Printf("%4i %4i %3.1f %4i%s\n",
+		       (int)(1000 * client->netchan.frame_rate),
+		       (int)SV_CalcPing(client),
+		       100.0 * client->netchan.drop_count /
+		       client->netchan.incoming_sequence,
+		       client->netchan.qport,
+		       client->spectator ? " (s)" : "");
 	}
     }
     Con_Printf("\n");
@@ -501,28 +481,34 @@ SV_Status_f(void)
 SV_ConSay_f
 ==================
 */
-void
+static void
 SV_ConSay_f(void)
 {
     client_t *client;
-    int j;
-    char *p;
+    int i;
+    size_t len, space;
+    const char *p;
     char text[1024];
 
     if (Cmd_Argc() < 2)
 	return;
 
     strcpy(text, "console: ");
+
+    len = strlen(text);
+    space = sizeof(text) - len - 2; // -2 for \n and null terminator
     p = Cmd_Args();
-
     if (*p == '"') {
-	p++;
-	p[strlen(p) - 1] = 0;
+	/* remove quotes */
+	strncat(text, p + 1, qmin(strlen(p) - 2, space));
+	text[len + qmin(strlen(p) - 2, space)] = 0;
+    } else {
+	strncat(text, p, space);
+	text[len + qmin(strlen(p), space)] = 0;
     }
+    strcat(text, "\n");
 
-    strcat(text, p);
-
-    for (j = 0, client = svs.clients; j < MAX_CLIENTS; j++, client++) {
+    for (i = 0, client = svs.clients; i < MAX_CLIENTS; i++, client++) {
 	if (client->state != cs_spawned)
 	    continue;
 	SV_ClientPrintf(client, PRINT_CHAT, "%s\n", text);
@@ -535,14 +521,14 @@ SV_ConSay_f(void)
 SV_Heartbeat_f
 ==================
 */
-void
+static void
 SV_Heartbeat_f(void)
 {
     svs.last_heartbeat = -9999;
 }
 
 void
-SV_SendServerInfoChange(char *key, char *value)
+SV_SendServerInfoChange(const char *key, const char *value)
 {
     if (!sv.state)
 	return;
@@ -559,12 +545,9 @@ SV_Serverinfo_f
   Examine or change the serverinfo string
 ===========
 */
-char *CopyString(char *s);
-void
+static void
 SV_Serverinfo_f(void)
 {
-    cvar_t *var;
-
     if (Cmd_Argc() == 1) {
 	Con_Printf("Server info settings:\n");
 	Info_Print(svs.info);
@@ -584,12 +567,9 @@ SV_Serverinfo_f(void)
 			MAX_SERVERINFO_STRING);
 
     // if this is a cvar, change it too
-    var = Cvar_FindVar(Cmd_Argv(1));
-    if (var) {
-	Z_Free(var->string);	// free the old value string
-	var->string = CopyString(Cmd_Argv(2));
-	var->value = Q_atof(var->string);
-    }
+    // FIXME - double cvar search just to avoid a Con_Printf
+    if (Cvar_FindVar(Cmd_Argv(1)))
+	Cvar_Set(Cmd_Argv(1), Cmd_Argv(2));
 
     SV_SendServerInfoChange(Cmd_Argv(1), Cmd_Argv(2));
 }
@@ -602,8 +582,7 @@ SV_Serverinfo_f
   Examine or change the serverinfo string
 ===========
 */
-char *CopyString(char *s);
-void
+static void
 SV_Localinfo_f(void)
 {
     if (Cmd_Argc() == 1) {
@@ -633,18 +612,21 @@ SV_User_f
 Examine a users info strings
 ===========
 */
-void
+static void
 SV_User_f(void)
 {
+    client_t *client;
+
     if (Cmd_Argc() != 2) {
 	Con_Printf("Usage: info <userid>\n");
 	return;
     }
 
-    if (!SV_SetPlayer())
+    client = SV_GetClient(atoi(Cmd_Argv(1)));
+    if (!client)
 	return;
 
-    Info_Print(host_client->userinfo);
+    Info_Print(client->userinfo);
 }
 
 /*
@@ -654,10 +636,10 @@ SV_Gamedir
 Sets the fake *gamedir to a different directory.
 ================
 */
-void
+static void
 SV_Gamedir(void)
 {
-    char *dir;
+    const char *dir;
 
     if (Cmd_Argc() == 1) {
 	Con_Printf("Current *gamedir: %s\n",
@@ -689,7 +671,7 @@ Sets the gamedir and path to a different directory.
 ================
 */
 
-void
+static void
 SV_Floodprot_f(void)
 {
     int arg1, arg2, arg3;
@@ -731,7 +713,7 @@ SV_Floodprot_f(void)
     fp_secondsdead = arg3;
 }
 
-void
+static void
 SV_Floodprotmsg_f(void)
 {
     if (Cmd_Argc() == 1) {
@@ -751,11 +733,10 @@ SV_Gamedir_f
 Sets the gamedir and path to a different directory.
 ================
 */
-char gamedirfile[MAX_OSPATH];
-void
+static void
 SV_Gamedir_f(void)
 {
-    char *dir;
+    const char *dir;
 
     if (Cmd_Argc() == 1) {
 	Con_Printf("Current gamedir: %s\n", com_gamedir);
@@ -784,7 +765,7 @@ SV_Gamedir_f(void)
 SV_Snap
 ================
 */
-void
+static void
 SV_Snap(int uid)
 {
     client_t *cl;
@@ -838,7 +819,7 @@ SV_Snap(int uid)
 SV_Snap_f
 ================
 */
-void
+static void
 SV_Snap_f(void)
 {
     int uid;
@@ -858,7 +839,7 @@ SV_Snap_f(void)
 SV_Snap
 ================
 */
-void
+static void
 SV_SnapAll_f(void)
 {
     client_t *cl;

@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "console.h"
 #include "cvar.h"
 #include "mathlib.h"
+#include "model.h"
 #include "pmove.h"
 #include "protocol.h"
 #include "quakedef.h"
@@ -31,17 +32,31 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifdef GLQUAKE
 #include "glquake.h"
-#include "gl_model.h"
 #else
-#include "model.h"
 #include "d_iface.h"
 #endif
+
+// refresh list
+int cl_numvisedicts;
+entity_t cl_visedicts[MAX_VISEDICTS];
 
 static struct predicted_player {
     int flags;
     qboolean active;
     vec3_t origin;		// predicted origin
 } predicted_players[MAX_CLIENTS];
+
+typedef struct visedict_info_s {
+    int keynum;
+    vec3_t origin;
+} visedict_info_t;
+
+/*
+ * This containse saved visedicts from the last frame so it
+ * can be scanned for old origins of trailing objects
+ */
+static visedict_info_t saved_visedicts[MAX_VISEDICTS];
+static int num_saved_visedicts;
 
 //============================================================
 
@@ -153,8 +168,6 @@ CL_ParseDelta
 Can go from either a baseline or a previous packet_entity
 ==================
 */
-int bitcounts[32];		/// just for protocol profiling
-
 static void
 CL_ParseDelta(entity_state_t *from, entity_state_t *to, int bits)
 {
@@ -170,11 +183,6 @@ CL_ParseDelta(entity_state_t *from, entity_state_t *to, int bits)
 	i = MSG_ReadByte();
 	bits |= i;
     }
-    // count the bits for net profiling
-    for (i = 0; i < 16; i++)
-	if (bits & (1 << i))
-	    bitcounts[i]++;
-
     to->flags = bits;
 
     if (bits & U_MODEL)
@@ -262,7 +270,7 @@ CL_ParsePacketEntities(qboolean delta)
     packet_entities_t *oldp, *newp, dummy;
     int oldindex, newindex;
     int word, newnum, oldnum;
-    qboolean full;
+    qboolean full, old_ok;
     byte from;
 
     newpacket = cls.netchan.incoming_sequence & UPDATE_MASK;
@@ -281,13 +289,15 @@ CL_ParsePacketEntities(qboolean delta)
 
     full = false;
     if (oldpacket != -1) {
-	if (cls.netchan.outgoing_sequence - oldpacket >= UPDATE_BACKUP - 1) {	// we can't use this, it is too old
+	if (cls.netchan.outgoing_sequence - oldpacket >= UPDATE_BACKUP - 1) {
+	    /* we can't use this, it is too old */
 	    FlushEntityPacket();
 	    return;
 	}
 	cl.validsequence = cls.netchan.incoming_sequence;
 	oldp = &cl.frames[oldpacket & UPDATE_MASK].packet_entities;
-    } else {			// this is a full update that we can start delta compressing from now
+    } else {
+	/* this is a full update that we can start delta compressing from now */
 	oldp = &dummy;
 	dummy.num_entities = 0;
 	cl.validsequence = cls.netchan.incoming_sequence;
@@ -304,7 +314,8 @@ CL_ParsePacketEntities(qboolean delta)
 	    Host_EndGame("msg_badread in packetentities");
 
 	if (!word) {
-	    while (oldindex < oldp->num_entities) {	// copy all the rest of the entities from the old packet
+	    while (oldindex < oldp->num_entities) {
+		/* copy all the rest of the entities from the old packet */
 		if (newindex >= MAX_PACKET_ENTITIES)
 		    Host_EndGame("%s: newindex == MAX_PACKET_ENTITIES",
 				 __func__);
@@ -314,10 +325,10 @@ CL_ParsePacketEntities(qboolean delta)
 	    }
 	    break;
 	}
+
 	newnum = word & 511;
-	oldnum =
-	    oldindex >=
-	    oldp->num_entities ? 9999 : oldp->entities[oldindex].number;
+	old_ok = oldindex < oldp->num_entities;
+	oldnum = old_ok ? oldp->entities[oldindex].number : 9999;
 
 	while (newnum > oldnum) {
 	    if (full) {
@@ -325,18 +336,18 @@ CL_ParsePacketEntities(qboolean delta)
 		FlushEntityPacket();
 		return;
 	    }
-	    // copy one of the old entities over to the new packet unchanged
+	    /* copy one of the old entities over to the new packet unchanged */
 	    if (newindex >= MAX_PACKET_ENTITIES)
 		Host_EndGame("%s: newindex == MAX_PACKET_ENTITIES", __func__);
 	    newp->entities[newindex] = oldp->entities[oldindex];
 	    newindex++;
 	    oldindex++;
-	    oldnum =
-		oldindex >=
-		oldp->num_entities ? 9999 : oldp->entities[oldindex].number;
+	    old_ok = oldindex < oldp->num_entities;
+	    oldnum = old_ok ? oldp->entities[oldindex].number : 9999;
 	}
 
-	if (newnum < oldnum) {	// new from baseline
+	/* new from baseline */
+	if (newnum < oldnum) {
 	    if (word & U_REMOVE) {
 		if (full) {
 		    cl.validsequence = 0;
@@ -354,7 +365,8 @@ CL_ParsePacketEntities(qboolean delta)
 	    continue;
 	}
 
-	if (newnum == oldnum) {	// delta from previous
+	/* delta from previous */
+	if (newnum == oldnum) {
 	    if (full) {
 		cl.validsequence = 0;
 		Con_Printf("WARNING: delta on full update");
@@ -370,7 +382,6 @@ CL_ParsePacketEntities(qboolean delta)
 	}
 
     }
-
     newp->num_entities = newindex;
 }
 
@@ -465,7 +476,7 @@ CL_LinkPacketEntities(void)
 	    for (i = 0; i < 3; i++) {
 		a1 = s1->angles[i];
 		a2 = s2->angles[i];
-		if (a1 - a2 > 180)
+		if (a1 - a2 >= 180)
 		    a1 -= 360;
 		if (a1 - a2 < -180)
 		    a1 += 360;
@@ -483,13 +494,13 @@ CL_LinkPacketEntities(void)
 	    continue;
 
 	// scan the old entity display list for a matching
-	for (i = 0; i < cl_oldnumvisedicts; i++) {
-	    if (cl_oldvisedicts[i].keynum == ent->keynum) {
-		VectorCopy(cl_oldvisedicts[i].origin, old_origin);
+	for (i = 0; i < num_saved_visedicts; i++) {
+	    if (saved_visedicts[i].keynum == ent->keynum) {
+		VectorCopy(saved_visedicts[i].origin, old_origin);
 		break;
 	    }
 	}
-	if (i == cl_oldnumvisedicts)
+	if (i == num_saved_visedicts)
 	    continue;		// not in last message
 
 	for (i = 0; i < 3; i++)
@@ -622,7 +633,6 @@ CL_ParsePlayerinfo(void)
 {
     int msec;
     int flags;
-    player_info_t *info;
     player_state_t *state;
     int num;
     int i;
@@ -631,10 +641,7 @@ CL_ParsePlayerinfo(void)
     if (num > MAX_CLIENTS)
 	Sys_Error("CL_ParsePlayerinfo: bad num");
 
-    info = &cl.players[num];
-
     state = &cl.frames[parsecountmod].playerstate[num];
-
     flags = state->flags = MSG_ReadShort();
 
     state->messagenum = cl.parsecount;
@@ -755,8 +762,8 @@ CL_AddFlagModels(entity_t *ent, int team)
 	    ent->origin[i] - f * v_forward[i] + 22 * v_right[i];
     newent->origin[2] -= 16;
 
-    VectorCopy(ent->angles, newent->angles)
-	newent->angles[2] -= 45;
+    VectorCopy(ent->angles, newent->angles);
+    newent->angles[2] -= 45;
 }
 
 /*
@@ -768,9 +775,9 @@ for all current players
 =============
 */
 static void
-CL_LinkPlayers(void)
+CL_LinkPlayers(physent_stack_t *pestack)
 {
-    int j;
+    int playernum;
     player_info_t *info;
     player_state_t *state;
     player_state_t exact;
@@ -786,43 +793,44 @@ CL_LinkPlayers(void)
 
     frame = &cl.frames[cl.parsecount & UPDATE_MASK];
 
-    for (j = 0, info = cl.players, state = frame->playerstate;
-	 j < MAX_CLIENTS; j++, info++, state++) {
+    info = cl.players;
+    state = frame->playerstate;
+    for (playernum = 0; playernum < MAX_CLIENTS; playernum++, info++, state++) {
 	if (state->messagenum != cl.parsecount)
 	    continue;		// not present this frame
 
 	// spawn light flashes, even ones coming from invisible objects
 #ifdef GLQUAKE
-	if (!gl_flashblend.value || j != cl.playernum) {
+	if (!gl_flashblend.value || playernum != cl.playernum) {
 #endif
 	    if ((state->effects & (EF_BLUE | EF_RED)) == (EF_BLUE | EF_RED))
-		CL_NewDlight(j, state->origin[0], state->origin[1],
+		CL_NewDlight(playernum, state->origin[0], state->origin[1],
 			     state->origin[2], 200 + (rand() & 31), 0.1, DLIGHT_PURPLE);
 	    else if (state->effects & EF_BLUE)
-		CL_NewDlight(j, state->origin[0], state->origin[1],
+		CL_NewDlight(playernum, state->origin[0], state->origin[1],
 			     state->origin[2], 200 + (rand() & 31), 0.1, DLIGHT_BLUE);
 	    else if (state->effects & EF_RED)
-		CL_NewDlight(j, state->origin[0], state->origin[1],
+		CL_NewDlight(playernum, state->origin[0], state->origin[1],
 			     state->origin[2], 200 + (rand() & 31), 0.1, DLIGHT_RED);
 	    else if (state->effects & EF_BRIGHTLIGHT)
-		CL_NewDlight(j, state->origin[0], state->origin[1],
+		CL_NewDlight(playernum, state->origin[0], state->origin[1],
 			     state->origin[2] + 16, 400 + (rand() & 31),
 			     0.1, DLIGHT_FLASH);
 	    else if (state->effects & EF_DIMLIGHT)
-		CL_NewDlight(j, state->origin[0], state->origin[1],
+		CL_NewDlight(playernum, state->origin[0], state->origin[1],
 			     state->origin[2], 200 + (rand() & 31), 0.1, DLIGHT_FLASH);
 #ifdef GLQUAKE
 	}
 #endif
 
 	// the player object never gets added
-	if (j == cl.playernum)
+	if (playernum == cl.playernum)
 	    continue;
 
 	if (!state->modelindex)
 	    continue;
 
-	if (!Cam_DrawPlayer(j))
+	if (!Cam_DrawPlayer(playernum))
 	    continue;
 
 	// grab an entity to fill in
@@ -851,8 +859,7 @@ CL_LinkPlayers(void)
 
 	// only predict half the move to minimize overruns
 	msec = 500 * (playertime - state->state_time);
-	if (msec <= 0
-	    || (!cl_predict_players.value && !cl_predict_players2.value)) {
+	if (msec <= 0 || (!cl_predict_players.value && !cl_predict_players2.value)) {
 	    VectorCopy(state->origin, ent->origin);
 //Con_DPrintf ("nopredict\n");
 	} else {
@@ -862,10 +869,10 @@ CL_LinkPlayers(void)
 	    state->command.msec = msec;
 //Con_DPrintf ("predict: %i\n", msec);
 
-	    oldphysent = pmove.numphysent;
-	    CL_SetSolidPlayers(j);
-	    CL_PredictUsercmd(state, &exact, &state->command, false);
-	    pmove.numphysent = oldphysent;
+	    oldphysent = pestack->numphysent;
+	    CL_SetSolidPlayers(pestack, playernum);
+	    CL_PredictUsercmd(state, &exact, &state->command, pestack, false);
+	    pestack->numphysent = oldphysent;
 	    VectorCopy(exact.origin, ent->origin);
 	}
 
@@ -887,37 +894,47 @@ Builds all the pmove physents for the current frame
 ===============
 */
 void
-CL_SetSolidEntities(void)
+CL_SetSolidEntities(physent_stack_t *pestack)
 {
+    const packet_entities_t *pak;
+    const frame_t *frame;
+    physent_t *physent;
     int i;
-    frame_t *frame;
-    packet_entities_t *pak;
-    entity_state_t *state;
 
-    pmove.physents[0].model = cl.worldmodel;
-    VectorCopy(vec3_origin, pmove.physents[0].origin);
-    pmove.physents[0].info = 0;
-    pmove.numphysent = 1;
+    if (!cl.worldmodel) {
+	/* FIXME - Shouldn't be getting called without a world? */
+	pestack->numphysent = 0;
+	return;
+    }
+
+    physent = pestack->physents;
+    physent->brushmodel = ConstBrushModel(&cl.worldmodel->model);
+    VectorCopy(vec3_origin, physent->origin);
+    physent++;
 
     frame = &cl.frames[parsecountmod];
     pak = &frame->packet_entities;
 
     for (i = 0; i < pak->num_entities; i++) {
-	state = &pak->entities[i];
+	const entity_state_t *state = &pak->entities[i];
+	const brushmodel_t *brushmodel;
+	const model_t *model;
 
 	if (!state->modelindex)
 	    continue;
-	if (!cl.model_precache[state->modelindex])
+
+	model = cl.model_precache[state->modelindex];
+	if (!model || model->type != mod_brush)
 	    continue;
-	if (cl.model_precache[state->modelindex]->hulls[1].firstclipnode) {
-	    pmove.physents[pmove.numphysent].model =
-		cl.model_precache[state->modelindex];
-	    VectorCopy(state->origin,
-		       pmove.physents[pmove.numphysent].origin);
-	    pmove.numphysent++;
+
+	brushmodel = ConstBrushModel(model);
+	if (brushmodel->hulls[1].firstclipnode) {
+	    physent->brushmodel = brushmodel;
+	    VectorCopy(state->origin, physent->origin);
+	    physent++;
 	}
     }
-
+    pestack->numphysent = physent - pestack->physents;
 }
 
 /*
@@ -931,7 +948,7 @@ This sets up the first phase.
 ===
 */
 void
-CL_SetUpPlayerPrediction(qboolean dopred)
+CL_SetUpPlayerPrediction(const physent_stack_t *pestack, qboolean dopred)
 {
     int j;
     player_state_t *state;
@@ -982,7 +999,7 @@ CL_SetUpPlayerPrediction(qboolean dopred)
 		state->command.msec = msec;
 		//Con_DPrintf ("predict: %i\n", msec);
 
-		CL_PredictUsercmd(state, &exact, &state->command, false);
+		CL_PredictUsercmd(state, &exact, &state->command, pestack, false);
 		VectorCopy(exact.origin, pplayer->origin);
 	    }
 	}
@@ -1000,36 +1017,36 @@ pmove must be setup with world and solid entity hulls before calling
 ===============
 */
 void
-CL_SetSolidPlayers(int playernum)
+CL_SetSolidPlayers(physent_stack_t *pestack, int playernum)
 {
-    int j;
     struct predicted_player *pplayer;
-    physent_t *pent;
+    physent_t *physent;
+    int i;
 
     if (!cl_solid_players.value)
 	return;
 
-    pent = pmove.physents + pmove.numphysent;
-
-    for (j = 0, pplayer = predicted_players; j < MAX_CLIENTS; j++, pplayer++) {
-
+    physent = pestack->physents + pestack->numphysent;
+    for (i = 0, pplayer = predicted_players; i < MAX_CLIENTS; i++, pplayer++) {
+	/* check if active this frame */
 	if (!pplayer->active)
-	    continue;		// not present this frame
-
-	// the player object never gets added
-	if (j == playernum)
 	    continue;
 
-	if (pplayer->flags & PF_DEAD)
-	    continue;		// dead players aren't solid
+	/* the player object never gets added */
+	if (i == playernum)
+	    continue;
 
-	pent->model = 0;
-	VectorCopy(pplayer->origin, pent->origin);
-	VectorCopy(player_mins, pent->mins);
-	VectorCopy(player_maxs, pent->maxs);
-	pmove.numphysent++;
-	pent++;
+	/* dead players aren't solid */
+	if (pplayer->flags & PF_DEAD)
+	    continue;
+
+	physent->brushmodel = NULL;
+	VectorCopy(pplayer->origin, physent->origin);
+	VectorCopy(player_mins, physent->mins);
+	VectorCopy(player_maxs, physent->maxs);
+	physent++;
     }
+    pestack->numphysent = physent - pestack->physents;
 }
 
 
@@ -1043,21 +1060,23 @@ Made up of: clients, packet_entities, nails, and tents
 ===============
 */
 void
-CL_EmitEntities(void)
+CL_EmitEntities(physent_stack_t *pestack)
 {
+    int i;
+
     if (cls.state != ca_active)
 	return;
     if (!cl.validsequence)
 	return;
 
-    cl_oldnumvisedicts = cl_numvisedicts;
-    cl_oldvisedicts =
-	cl_visedicts_list[(cls.netchan.incoming_sequence - 1) & 1];
-    cl_visedicts = cl_visedicts_list[cls.netchan.incoming_sequence & 1];
-
+    for (i = 0; i < cl_numvisedicts; i++) {
+	saved_visedicts[i].keynum = cl_visedicts[i].keynum;
+	VectorCopy(cl_visedicts[i].origin, saved_visedicts[i].origin);
+    }
+    num_saved_visedicts = cl_numvisedicts;
     cl_numvisedicts = 0;
 
-    CL_LinkPlayers();
+    CL_LinkPlayers(pestack);
     CL_LinkPacketEntities();
     CL_LinkProjectiles();
     CL_UpdateTEnts();

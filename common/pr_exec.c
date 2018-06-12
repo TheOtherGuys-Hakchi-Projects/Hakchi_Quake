@@ -51,7 +51,7 @@ dfunction_t *pr_xfunction;
 int pr_xstatement;
 int pr_argc;
 
-char *pr_opnames[] = {
+const char *pr_opnames[] = {
     "DONE",
 
     "MUL_F",
@@ -396,7 +396,7 @@ PR_ExecuteProgram(func_t fnum)
 
     f = &pr_functions[fnum];
 
-    runaway = 100000;
+    runaway = 1000000;
     pr_trace = false;
 
 // make a stack frame
@@ -683,7 +683,7 @@ PR_ExecuteProgram(func_t fnum)
 /*----------------------*/
 
 #define PR_STRTBL_CHUNK 256
-static char **pr_strtbl = NULL;
+static const char **pr_strtbl = NULL;
 static int pr_strtbl_size;
 static int num_prstr;
 
@@ -698,10 +698,10 @@ PR_InitStringTable(void)
     num_prstr = 0;
 }
 
-char *
+const char *
 PR_GetString(int num)
 {
-    char *s = "";
+    const char *s = "";
 
     if (num >= 0 && num < pr_strings_size - 1)
 	s = pr_strings + num;
@@ -721,7 +721,7 @@ PR_GetString(int num)
 }
 
 int
-PR_SetString(char *s)
+PR_SetString(const char *s)
 {
     int i;
 
@@ -734,8 +734,6 @@ PR_SetString(char *s)
 	if (num_prstr == pr_strtbl_size) {
 	    pr_strtbl_size += PR_STRTBL_CHUNK;
 	    pr_strtbl = Z_Realloc(pr_strtbl, pr_strtbl_size * sizeof(char *));
-	    Con_DPrintf("%s: Progs string table grew to %d entries.\n",
-			__func__, pr_strtbl_size);
 	}
 	pr_strtbl[num_prstr] = s;
 	num_prstr++;

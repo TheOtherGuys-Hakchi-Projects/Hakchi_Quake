@@ -23,9 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "net_loop.h"
 #include "net_udp.h"
 
-#include "quakedef.h"
-
-net_driver_t net_drivers[MAX_NET_DRIVERS] = {
+net_driver_t net_drivers[] = {
     {
 	.name				= "Loopback",
 	.initialized			= false,
@@ -61,7 +59,7 @@ net_driver_t net_drivers[MAX_NET_DRIVERS] = {
 
 int net_numdrivers = 2;
 
-net_landriver_t net_landrivers[MAX_NET_DRIVERS] = {
+net_landriver_t net_landrivers[] = {
     {
 	.name			= "UDP",
 	.initialized		= false,
@@ -71,19 +69,14 @@ net_landriver_t net_landrivers[MAX_NET_DRIVERS] = {
 	.Listen			= UDP_Listen,
 	.OpenSocket		= UDP_OpenSocket,
 	.CloseSocket		= UDP_CloseSocket,
-	.Connect		= UDP_Connect,
 	.CheckNewConnections	= UDP_CheckNewConnections,
 	.Read			= UDP_Read,
 	.Write			= UDP_Write,
 	.Broadcast		= UDP_Broadcast,
-	.AddrToString		= UDP_AddrToString,
-	.StringToAddr		= UDP_StringToAddr,
 	.GetSocketAddr		= UDP_GetSocketAddr,
 	.GetNameFromAddr	= UDP_GetNameFromAddr,
 	.GetAddrFromName	= UDP_GetAddrFromName,
-	.AddrCompare		= UDP_AddrCompare,
-	.GetSocketPort		= UDP_GetSocketPort,
-	.SetSocketPort		= UDP_SetSocketPort
+	.GetDefaultMTU		= UDP_GetDefaultMTU
     }
 };
 

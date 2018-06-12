@@ -21,43 +21,24 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef CLIENT_PMOVE_H
 #define CLIENT_PMOVE_H
 
+#include "model.h"
 #include "protocol.h"
 
-#ifdef GLQUAKE
-#include "gl_model.h"
-#else
-#include "model.h"
+#ifndef GLQUAKE
 #include "d_iface.h"
 #endif
-
-typedef struct {
-    vec3_t normal;
-    float dist;
-} pmplane_t;
-
-typedef struct {
-    qboolean allsolid;		// if true, plane is not valid
-    qboolean startsolid;	// if true, the initial point was in a solid area
-    qboolean inopen, inwater;
-    float fraction;		// time completed, 1.0 = didn't hit anything
-    vec3_t endpos;		// final position
-    pmplane_t plane;		// surface normal at impact
-    int ent;			// entity the surface is on
-} pmtrace_t;
-
 
 #define	MAX_PHYSENTS	32
 typedef struct {
     vec3_t origin;
-    model_t *model;		// only for bsp models
+    const brushmodel_t *brushmodel;
     vec3_t mins, maxs;		// only for non-bsp models
-    int info;			// for client or server to identify
+#ifdef SERVERONLY
+    int entitynum;		// for server to identify
+#endif
 } physent_t;
 
-
 typedef struct {
-    int sequence;		// just for debugging prints
-
     // player state
     vec3_t origin;
     vec3_t angles;
@@ -67,17 +48,24 @@ typedef struct {
     qboolean dead;
     int spectator;
 
-    // world state
-    int numphysent;
-    physent_t physents[MAX_PHYSENTS];	// 0 should be the world
+    const physent_t *onground;
+    int watertype;
+    int waterlevel;
 
     // input
-    usercmd_t cmd;
+    const usercmd_t *cmd;
 
     // results
+#ifdef SERVERONLY
     int numtouch;
-    int touchindex[MAX_PHYSENTS];
+    const physent_t *touch[MAX_PHYSENTS];
+#endif
 } playermove_t;
+
+typedef struct {
+    int numphysent;
+    physent_t physents[MAX_PHYSENTS];
+} physent_stack_t;
 
 typedef struct {
     float gravity;
@@ -92,20 +80,17 @@ typedef struct {
     float entgravity;
 } movevars_t;
 
-
 extern movevars_t movevars;
-extern playermove_t pmove;
-extern int onground;
-extern int waterlevel;
-extern int watertype;
+extern const vec3_t player_mins;
+extern const vec3_t player_maxs;
 
-void PlayerMove(void);
-void Pmove_Init(void);
+void PlayerMove(playermove_t *pmove, const physent_stack_t *pestack);
 
-int PM_HullPointContents(hull_t *hull, int num, vec3_t p);
+int PM_PointContents(const vec3_t point, const physent_stack_t *pestack);
+qboolean PM_TestPlayerPosition(const vec3_t point, const physent_stack_t *pestack);
 
-int PM_PointContents(vec3_t point);
-qboolean PM_TestPlayerPosition(vec3_t point);
-pmtrace_t PM_PlayerMove(vec3_t start, vec3_t stop);
+/* Returns the physent that the trace hit, NULL otherwise */
+const physent_t *PM_PlayerMove(const vec3_t start, const vec3_t stop,
+			       const physent_stack_t *pestack, trace_t *trace);
 
 #endif /* CLIENT_PMOVE_H */

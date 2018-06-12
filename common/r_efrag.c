@@ -20,9 +20,15 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // r_efrag.c
 
 #include "console.h"
+#include "model.h"
 #include "quakedef.h"
-#include "r_local.h"
 #include "sys.h"
+
+#ifdef GLQUAKE
+#include "glquake.h"
+#else
+#include "r_local.h"
+#endif
 
 mnode_t *r_pefragtopnode;
 
@@ -32,7 +38,7 @@ mnode_t *r_pefragtopnode;
 /*
 ===============================================================================
 
-					ENTITY FRAGMENT FUNCTIONS
+			ENTITY FRAGMENT FUNCTIONS
 
 ===============================================================================
 */
@@ -131,21 +137,22 @@ R_SplitEntityOnNode(mnode_t *node)
     splitplane = node->plane;
     sides = BOX_ON_PLANE_SIDE(r_emins, r_emaxs, splitplane);
 
-    if (sides == 3) {
+    if (sides == PSIDE_BOTH) {
 	// split on this plane
 	// if this is the first splitter of this bmodel, remember it
 	if (!r_pefragtopnode)
 	    r_pefragtopnode = node;
     }
 // recurse down the contacted sides
-    if (sides & 1)
+    if (sides & PSIDE_FRONT)
 	R_SplitEntityOnNode(node->children[0]);
 
-    if (sides & 2)
+    if (sides & PSIDE_BACK)
 	R_SplitEntityOnNode(node->children[1]);
 }
 
 
+#ifndef GLQUAKE
 /*
 ===================
 R_SplitEntityOnNode2
@@ -159,10 +166,13 @@ R_SplitEntityOnNode2(mnode_t *node)
 
     if (node->visframe != r_visframecount)
 	return;
+    if (node->clipflags == BMODEL_FULLY_CLIPPED)
+	return;
 
     if (node->contents < 0) {
 	if (node->contents != CONTENTS_SOLID)
-	    r_pefragtopnode = node;	// we've reached a non-solid leaf, so it's
+	    r_pefragtopnode = node;
+	// we've reached a non-solid leaf, so it's
 	//  visible and not BSP clipped
 	return;
     }
@@ -170,17 +180,18 @@ R_SplitEntityOnNode2(mnode_t *node)
     splitplane = node->plane;
     sides = BOX_ON_PLANE_SIDE(r_emins, r_emaxs, splitplane);
 
-    if (sides == 3) {
+    if (sides == PSIDE_BOTH) {
 	// remember first splitter
 	r_pefragtopnode = node;
 	return;
     }
 // not split yet; recurse down the contacted side
-    if (sides & 1)
+    if (sides & PSIDE_FRONT)
 	R_SplitEntityOnNode2(node->children[0]);
     else
 	R_SplitEntityOnNode2(node->children[1]);
 }
+#endif
 
 
 /*
@@ -191,35 +202,17 @@ R_AddEfrags
 void
 R_AddEfrags(entity_t *ent)
 {
-    model_t *entmodel;
-    int i;
-
     if (!ent->model)
 	return;
 
-#ifdef NQ_HACK
-    if (ent == cl_entities)
-	return;			// never add the world
-#endif
-#ifdef QW_HACK
-    if (ent == &r_worldentity)
-	return;			// never add the world
-#endif
-
     r_addent = ent;
-
     lastlink = &ent->efrag;
     r_pefragtopnode = NULL;
 
-    entmodel = ent->model;
-
-    for (i = 0; i < 3; i++) {
-	r_emins[i] = ent->origin[i] + entmodel->mins[i];
-	r_emaxs[i] = ent->origin[i] + entmodel->maxs[i];
-    }
+    VectorAdd(ent->origin, ent->model->mins, r_emins);
+    VectorAdd(ent->origin, ent->model->maxs, r_emaxs);
 
     R_SplitEntityOnNode(cl.worldmodel->nodes);
-
     ent->topnode = r_pefragtopnode;
 }
 
@@ -238,33 +231,21 @@ R_StoreEfrags(efrag_t **ppefrag)
     model_t *clmodel;
     efrag_t *pefrag;
 
-
     while ((pefrag = *ppefrag) != NULL) {
 	pent = pefrag->entity;
 	clmodel = pent->model;
-
 	switch (clmodel->type) {
 	case mod_alias:
 	case mod_brush:
 	case mod_sprite:
-	    pent = pefrag->entity;
-
 	    if ((pent->visframe != r_framecount) &&
 		(cl_numvisedicts < MAX_VISEDICTS)) {
-#ifdef NQ_HACK
-		cl_visedicts[cl_numvisedicts++] = pent;
-#endif
-#ifdef QW_HACK
-		cl_visedicts[cl_numvisedicts++] = *pent;
-#endif
-
-		// mark that we've recorded this entity for this frame
+		/* mark that we've recorded this entity for this frame */
 		pent->visframe = r_framecount;
+		cl_visedicts[cl_numvisedicts++] = *pent;
 	    }
-
 	    ppefrag = &pefrag->leafnext;
 	    break;
-
 	default:
 	    Sys_Error("%s: Bad entity type %d", __func__, clmodel->type);
 	}

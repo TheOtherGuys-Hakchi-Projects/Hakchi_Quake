@@ -17,9 +17,10 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
-// d_scan.c
-//
-// Portable C scan-level rasterization code, all pixel depths.
+
+/* Portable C scan-level rasterization code, all pixel depths. */
+
+#include <stdint.h>
 
 #include "quakedef.h"
 #include "r_local.h"
@@ -63,16 +64,14 @@ D_WarpScreen(void)
     // FIXME - use Zmalloc or similar?
     // FIXME - rowptr and column are constant for same vidmode?
     // FIXME - do they cycle?
-    rowptr = (byte **)malloc((scr_vrect.height + TURB_SCREEN_AMP * 2)
-			     * sizeof(byte *));
+    rowptr = malloc((scr_vrect.height + TURB_SCREEN_AMP * 2) * sizeof(byte *));
     for (v = 0; v < scr_vrect.height + TURB_SCREEN_AMP * 2; v++) {
 	rowptr[v] = d_viewbuffer + (r_refdef.vrect.y * screenwidth) +
 	    (screenwidth * (int)((float)v * hratio * h /
 				 (h + TURB_SCREEN_AMP * 2)));
     }
 
-    column = (int *)malloc((scr_vrect.width + TURB_SCREEN_AMP * 2)
-			   * sizeof(int));
+    column = malloc((scr_vrect.width + TURB_SCREEN_AMP * 2) * sizeof(int));
     for (u = 0; u < scr_vrect.width + TURB_SCREEN_AMP * 2; u++) {
 	column[u] = r_refdef.vrect.x +
 	    (int)((float)u * wratio * w / (w + TURB_SCREEN_AMP * 2));
@@ -110,13 +109,11 @@ D_DrawTurbulent8Span(void)
     int sturb, tturb;
 
     do {
-	sturb =
-	    ((r_turb_s +
-	      r_turb_turb[(r_turb_t >> 16) & (TURB_CYCLE - 1)]) >> 16) & 63;
-	tturb =
-	    ((r_turb_t +
-	      r_turb_turb[(r_turb_s >> 16) & (TURB_CYCLE - 1)]) >> 16) & 63;
-	*r_turb_pdest++ = *(r_turb_pbase + (tturb << 6) + sturb);
+	sturb = r_turb_s + r_turb_turb[(r_turb_t >> 16) & (TURB_CYCLE - 1)];
+	sturb = (sturb >> 16) & (TURB_TEX_SIZE - 1);
+	tturb = r_turb_t + r_turb_turb[(r_turb_s >> 16) & (TURB_CYCLE - 1)];
+	tturb = (tturb >> 16) & (TURB_TEX_SIZE - 1);
+	*r_turb_pdest++ = *(r_turb_pbase + (tturb * TURB_TEX_SIZE) + sturb);
 	r_turb_s += r_turb_sstep;
 	r_turb_t += r_turb_tstep;
     } while (--r_turb_spancount > 0);
@@ -421,7 +418,7 @@ D_DrawZSpans(espan_t *pspan)
 	// we count on FP exceptions being turned off to avoid range problems
 	izi = (int)(zi * 0x8000 * 0x10000);
 
-	if ((long)pdest & 0x02) {
+	if ((intptr_t)pdest & 0x02) {
 	    *pdest++ = (short)(izi >> 16);
 	    izi += izistep;
 	    count--;

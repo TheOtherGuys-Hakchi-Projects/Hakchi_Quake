@@ -87,15 +87,6 @@ typedef struct {
     int master_vol;		// 0-255 master volume
 } channel_t;
 
-typedef struct {
-    int rate;
-    int width;
-    int channels;
-    int loopstart;
-    int samples;
-    int dataofs;		// chunk starts this many bytes from file start
-} wavinfo_t;
-
 void S_Init(void);
 void S_Startup(void);
 void S_Shutdown(void);
@@ -108,8 +99,8 @@ void S_ClearBuffer(void);
 void S_Update(vec3_t origin, vec3_t v_forward, vec3_t v_right, vec3_t v_up);
 void S_ExtraUpdate(void);
 
-sfx_t *S_PrecacheSound(char *sample);
-void S_TouchSound(char *sample);
+sfx_t *S_PrecacheSound(const char *sample);
+void S_TouchSound(const char *sample);
 void S_BeginPrecaching(void);
 void S_EndPrecaching(void);
 void S_PaintChannels(int endtime);
@@ -132,8 +123,8 @@ void SNDDMA_Shutdown(void);
 // User-setable variables
 // ====================================================================
 
-#define	MAX_CHANNELS		128
-#define	MAX_DYNAMIC_CHANNELS	  8
+#define	MAX_CHANNELS		512
+#define	MAX_DYNAMIC_CHANNELS	128
 
 extern channel_t channels[MAX_CHANNELS];
 
@@ -153,10 +144,8 @@ extern cvar_t volume;
 
 extern int snd_blocked;
 
-void S_LocalSound(char *s);
+void S_LocalSound(const char *s);
 sfxcache_t *S_LoadSound(sfx_t *s);
-
-wavinfo_t GetWavinfo(char *name, byte *wav, int wavlength);
 
 void SND_InitScaletable(void);
 void SNDDMA_Submit(void);

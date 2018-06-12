@@ -24,8 +24,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <assert.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
+#include "qtypes.h"
 #include "cmd.h"
 #include "console.h"
 #include "glquake.h" /* FIXME - make usable in software mode too */
@@ -38,21 +40,18 @@ struct list_node {
     struct list_node *prev;
 };
 
-#define list_entry(ptr, type, member) \
-	((type *)((char *)(ptr)-(unsigned long)(&((type *)0)->member)))
-
 /* Iterate over each entry in the list */
 #define list_for_each_entry(pos, head, member)				\
-	for (pos = list_entry((head)->next, typeof(*pos), member);	\
+	for (pos = container_of((head)->next, typeof(*pos), member);	\
 	     &pos->member != (head);					\
-	     pos = list_entry(pos->member.next, typeof(*pos), member))
+	     pos = container_of(pos->member.next, typeof(*pos), member))
 
 /* Iterate over the list, safe for removal of entries */
 #define list_for_each_entry_safe(pos, n, head, member)			\
-	for (pos = list_entry((head)->next, typeof(*pos), member),	\
-	     n = list_entry(pos->member.next, typeof(*pos), member);	\
+	for (pos = container_of((head)->next, typeof(*pos), member),	\
+	     n = container_of(pos->member.next, typeof(*pos), member);	\
 	     &pos->member != (head);					\
-	     pos = n, n = list_entry(n->member.next, typeof(*n), member))
+	     pos = n, n = container_of(n->member.next, typeof(*n), member))
 
 #define LIST_HEAD_INIT(name) { &(name), &(name) }
 
@@ -218,6 +217,10 @@ winding_for_plane(const mplane_t *p)
  *  (winding_clip, winding_split)
  * ===========================
  */
+#define	SIDE_FRONT	0
+#define	SIDE_BACK	1
+#define	SIDE_ON		2
+
 static void
 CalcSides(const winding_t *in, const mplane_t *split,
 	  int *sides, vec_t *dists, int counts[3], vec_t epsilon)
@@ -481,14 +484,14 @@ winding_split(winding_t *in, const mplane_t *split,
  * "sides" indicates which side we went down each time
  */
 #define MAX_CLIPNODE_DEPTH 256
-static dclipnode_t *node_stack[MAX_CLIPNODE_DEPTH];
+static const mclipnode_t *node_stack[MAX_CLIPNODE_DEPTH];
 static int side_stack[MAX_CLIPNODE_DEPTH];
 static unsigned node_stack_depth;
 static unsigned num_hull_polys;
 static struct list_node hull_polys = LIST_HEAD_INIT(hull_polys);
 
 static void
-push_node(dclipnode_t *node, int side)
+push_node(const mclipnode_t *node, int side)
 {
     if (node_stack_depth == MAX_CLIPNODE_DEPTH)
 	Sys_Error("%s: node_depth == MAX_CLIPNODE_DEPTH\n", __func__);
@@ -519,13 +522,14 @@ free_hull_polys(void)
 }
 
 static void
-hull_windings_r(hull_t *hull, dclipnode_t *node, struct list_node *polys);
+hull_windings_r(const hull_t *hull, const mclipnode_t *node,
+		struct list_node *polys);
 
 static void
-do_hull_recursion(hull_t *hull, dclipnode_t *node, int side,
+do_hull_recursion(const hull_t *hull, const mclipnode_t *node, int side,
 		  struct list_node *polys)
 {
-    dclipnode_t *child;
+    const mclipnode_t *child;
     winding_t *w, *next;
 
     if (node->children[side] >= 0) {
@@ -564,9 +568,10 @@ do_hull_recursion(hull_t *hull, dclipnode_t *node, int side,
 }
 
 static void
-hull_windings_r(hull_t *hull, dclipnode_t *node, struct list_node *polys)
+hull_windings_r(const hull_t *hull, const mclipnode_t *node,
+		struct list_node *polys)
 {
-    mplane_t *plane = hull->planes + node->planenum;
+    const mplane_t *plane = hull->planes + node->planenum;
     winding_t *w, *next, *front, *back;
     int i;
     struct list_node frontlist = LIST_HEAD_INIT(frontlist);
@@ -614,7 +619,7 @@ hull_windings_r(hull_t *hull, dclipnode_t *node, struct list_node *polys)
 	Sys_Error("%s: No winding for plane!\n", __func__);
 
     for (i = 0; w && i < node_stack_depth; i++) {
-	mplane_t *p = hull->planes + node_stack[i]->planenum;
+	const mplane_t *p = hull->planes + node_stack[i]->planenum;
 	w = winding_clip(w, p, true, side_stack[i], 0.0001 /* ON_EPSILON */);
     }
     if (w) {
@@ -655,7 +660,7 @@ remove_paired_polys(void)
 }
 
 static void
-make_hull_windings(hull_t *hull)
+make_hull_windings(const hull_t *hull)
 {
     float t1, t2;
     struct list_node head = LIST_HEAD_INIT(head);
@@ -718,7 +723,7 @@ R_DrawWorldHull(void)
     int i;
 
     list_for_each_entry(poly, &hull_polys, chain) {
-	srand((unsigned long)poly);
+	srand((intptr_t)poly);
 	glColor3f(rand() % 256 / 255.0, rand() % 256 / 255.0,
 		  rand() % 256 / 255.0);
 	glBegin(GL_POLYGON);

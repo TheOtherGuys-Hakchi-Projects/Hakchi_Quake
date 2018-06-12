@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "mathlib.h"
 #include "quakedef.h"
 #include "render.h"
+#include "sound.h"
 #include "vid.h"
 
 //
@@ -57,13 +58,14 @@ typedef struct {
 } lightstyle_t;
 
 #define	MAX_SCOREBOARDNAME 32
-typedef struct {
+typedef struct player_info_s {
     char name[MAX_SCOREBOARDNAME];
     float entertime;
     int frags;
-    int colors;			// two 4 bit fields
+    byte topcolor;
+    byte bottomcolor;
     byte translations[VID_GRADES * 256];
-} scoreboard_t;
+} player_info_t;
 
 typedef struct {
     int destcolor[3];
@@ -77,15 +79,7 @@ typedef struct {
 
 #define	NUM_CSHIFTS	4
 
-#define	MAX_BEAMS	24
-typedef struct {
-    int entity;
-    struct model_s *model;
-    float endtime;
-    vec3_t start, end;
-} beam_t;
-
-#define	MAX_EFRAGS	640
+#define	MAX_EFRAGS	4096
 
 #define	MAX_MAPSTRING	2048
 #define	MAX_DEMOS	8
@@ -147,7 +141,6 @@ typedef struct {
 
 // information for local display
     int stats[MAX_CL_STATS];	// health, etc
-    int items;			// inventory bit flags
     float item_gettime[32];	// cl.time of aquiring item, for blinking
     float faceanimtime;		// use anim frame if cl.time < this
 
@@ -197,8 +190,8 @@ typedef struct {
 //
 // information that is static for the entire time connected to a server
 //
-    struct model_s *model_precache[MAX_MODELS];
-    struct sfx_s *sound_precache[MAX_SOUNDS];
+    model_t *model_precache[MAX_MODELS];
+    sfx_t *sound_precache[MAX_SOUNDS];
 
     char mapname[MAX_QPATH];
     char levelname[40];		// for display on solo scoreboard
@@ -207,7 +200,7 @@ typedef struct {
     int gametype;
 
 // refresh related state
-    struct model_s *worldmodel;	// cl_entitites[0].model
+    brushmodel_t *worldmodel;	// BrushModel(cl_entitites[0].model)
     struct efrag_s *free_efrags;
     int num_entities;		// held in cl_entities array
     int num_statics;		// held in cl_staticentities array
@@ -216,7 +209,9 @@ typedef struct {
     int cdtrack, looptrack;	// cd audio
 
 // frag scoreboard
-    scoreboard_t *scores;	// [cl.maxclients]
+    player_info_t *players;	// [cl.maxclients]
+
+    int protocol;		/* Active network protocol version */
 
 } client_state_t;
 
@@ -239,6 +234,8 @@ extern cvar_t cl_pitchspeed;
 
 extern cvar_t cl_anglespeedkey;
 
+extern cvar_t cl_run;
+
 extern cvar_t cl_autofire;
 
 extern cvar_t cl_shownet;
@@ -254,9 +251,11 @@ extern cvar_t m_yaw;
 extern cvar_t m_forward;
 extern cvar_t m_side;
 
+extern cvar_t m_freelook;
+
 
 #define	MAX_TEMP_ENTITIES	64	// lightning bolts, etc
-#define	MAX_STATIC_ENTITIES	128	// torches, etc
+#define	MAX_STATIC_ENTITIES	1024	// torches, etc
 
 extern client_state_t cl;
 
@@ -267,7 +266,12 @@ extern entity_t cl_static_entities[MAX_STATIC_ENTITIES];
 extern lightstyle_t cl_lightstyle[MAX_LIGHTSTYLES];
 extern dlight_t cl_dlights[MAX_DLIGHTS];
 extern entity_t cl_temp_entities[MAX_TEMP_ENTITIES];
-extern beam_t cl_beams[MAX_BEAMS];
+
+/*
+ * CL_PlayerEntity()
+ * Returns the player number if the entity is a player, 0 otherwise
+ */
+int CL_PlayerEntity(const entity_t *e);
 
 //=============================================================================
 
@@ -290,7 +294,7 @@ void CL_RunParticles(void);
 
 void CL_Init(void);
 
-void CL_EstablishConnection(char *host);
+void CL_EstablishConnection(const char *host);
 void CL_Signon1(void);
 void CL_Signon2(void);
 void CL_Signon3(void);
@@ -300,9 +304,11 @@ void CL_Disconnect(void);
 void CL_Disconnect_f(void);
 void CL_NextDemo(void);
 
-#define MAX_VISEDICTS 256
+#define MAX_VISEDICTS 1024
 extern int cl_numvisedicts;
-extern entity_t *cl_visedicts[MAX_VISEDICTS];
+extern entity_t cl_visedicts[];
+
+extern int fps_count;
 
 //
 // cl_input
@@ -329,9 +335,6 @@ void CL_ClearState(void);
 int CL_ReadFromServer(void);
 void CL_WriteToServer(usercmd_t *cmd);
 void CL_BaseMove(usercmd_t *cmd);
-
-
-char *Key_KeynumToString(int keynum);
 
 //
 // cl_demo.c
@@ -368,6 +371,23 @@ void V_SetContentsColor(int contents);
 // cl_tent
 //
 void CL_InitTEnts(void);
+void CL_ClearTEnts(void);
 void CL_SignonReply(void);
+
+typedef struct {
+    char manufacturer;
+    char version;
+    char encoding;
+    char bits_per_pixel;
+    unsigned short xmin, ymin, xmax, ymax;
+    unsigned short hres, vres;
+    unsigned char palette[48];
+    char reserved;
+    char color_planes;
+    unsigned short bytes_per_line;
+    unsigned short palette_type;
+    char filler[58];
+    unsigned char data;		// unbounded
+} pcx_t;
 
 #endif /* CLIENT_H */

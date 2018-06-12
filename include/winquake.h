@@ -28,8 +28,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #error "You shouldn't be including this file for non-Win32 stuff!"
 #endif
 
-// FIXME - mousewheel redefined? What is this magic number?
 #include <windows.h>
+#include <winsock2.h>
+
+// FIXME - mousewheel redefined? What is this magic number?
 #ifndef WM_MOUSEWHEEL
 # define WM_MOUSEWHEEL 0x020A
 #endif
@@ -40,10 +42,8 @@ extern HINSTANCE global_hInstance;
 extern int global_nCmdShow;
 
 typedef enum {
-    MS_WINDOWED, MS_FULLSCREEN, MS_FULLDIB, MS_UNINIT
+    MS_WINDOWED, MS_FULLSCREEN, MS_UNINIT
 } modestate_t;
-
-extern modestate_t modestate;
 
 extern HWND mainwindow;
 extern qboolean ActiveApp;
@@ -53,12 +53,8 @@ extern qboolean WinNT;
 // vid.h (or remove)
 //
 
-int VID_ForceUnlockedAndReturnState(void);
-void VID_ForceLockState(int lk);
 void VID_SetDefaultMode(void);
 
-extern int window_center_x, window_center_y;
-extern RECT window_rect;
 extern qboolean DDActive;
 
 //
@@ -69,12 +65,12 @@ void IN_ShowMouse(void);
 void IN_DeactivateMouse(void);
 void IN_HideMouse(void);
 void IN_ActivateMouse(void);
-void IN_RestoreOriginalMouseState(void);
-void IN_SetQuakeMouseState(void);
 void IN_MouseEvent(int mstate);
 void IN_UpdateClipCursor(void);
+void IN_UpdateWindowRect(int x, int y, int width, int height);
 
-extern qboolean mouseinitialized;
+extern int in_window_center_x, in_window_center_y;
+extern RECT in_window_rect;
 
 //
 // sound.h (or remove)

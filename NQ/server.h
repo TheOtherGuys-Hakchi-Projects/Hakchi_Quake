@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef SERVER_H
 #define SERVER_H
 
+#include "model.h"
 #include "progs.h"
 #include "client.h"
 
@@ -36,15 +37,16 @@ typedef struct {
 
     int lastcheck;		// used by PF_checkclient
     double lastchecktime;
+    const mleaf_t *checkleaf;
 
     char name[64];		// map name
 
     char modelname[64];		// maps/<name>.bsp, for model_precache[0]
-    struct model_s *worldmodel;
-    char *model_precache[MAX_MODELS];	// NULL terminated
-    struct model_s *models[MAX_MODELS];
-    char *sound_precache[MAX_SOUNDS];	// NULL terminated
-    char *lightstyles[MAX_LIGHTSTYLES];
+    brushmodel_t *worldmodel;
+    const char *model_precache[MAX_MODELS];	// NULL terminated
+    model_t *models[MAX_MODELS];
+    const char *sound_precache[MAX_SOUNDS];	// NULL terminated
+    const char *lightstyles[MAX_LIGHTSTYLES];
     int num_edicts;
     int max_edicts;
     edict_t *edicts;		/* can NOT be array indexed, because
@@ -56,10 +58,12 @@ typedef struct {
     byte datagram_buf[MAX_DATAGRAM];
 
     sizebuf_t reliable_datagram; // copied to all clients at end of frame
-    byte reliable_datagram_buf[MAX_DATAGRAM];
+    byte reliable_datagram_buf[MAX_MSGLEN];
 
     sizebuf_t signon;
-    byte signon_buf[8192];
+    byte signon_buf[MAX_MSGLEN];
+
+    int protocol;		/* Active network protocol version */
 } server_t;
 
 
@@ -81,7 +85,7 @@ typedef struct client_s {
     vec3_t wishdir;		// intended motion calced from cmd
 
     sizebuf_t message;		// can be added to at any time,
-    // copied and clear once per frame
+				// copied and clear once per frame
     byte msgbuf[MAX_MSGLEN];
     edict_t *edict;		// EDICT_NUM(clientnum+1)
     char name[32];		// for printing to other people
@@ -192,37 +196,31 @@ extern cvar_t sv_aim;
 extern server_static_t svs;	// persistant server info
 extern server_t sv;		// local server
 
-extern client_t *host_client;
-
-extern jmp_buf host_abortserver;
-
 extern double host_time;
-
-extern edict_t *sv_player;
 
 //===========================================================
 
 void SV_Init(void);
 
 void SV_StartParticle(vec3_t org, vec3_t dir, int color, int count);
-void SV_StartSound(edict_t *entity, int channel, char *sample,
+void SV_StartSound(edict_t *entity, int channel, const char *sample,
 		   int volume, float attenuation);
 
-void SV_DropClient(qboolean crash);
+void SV_DropClient(client_t *client, qboolean crash);
 
 void SV_SendClientMessages(void);
 void SV_ClearDatagram(void);
 
-int SV_ModelIndex(char *name);
+int SV_ModelIndex(const char *name);
 
-void SV_SetIdealPitch(void);
+void SV_SetIdealPitch(edict_t *player);
 
 void SV_AddUpdates(void);
 
-void SV_ClientThink(void);
 void SV_AddClientToServer(struct qsocket_s *ret);
 
-void SV_ClientPrintf(const char *fmt, ...) __attribute__((format(printf,1,2)));
+void SV_ClientPrintf(client_t *client, const char *fmt, ...)
+    __attribute__((format(printf,2,3)));
 void SV_BroadcastPrintf(const char *fmt, ...)
     __attribute__((format(printf,1,2)));
 
@@ -240,5 +238,11 @@ void SV_RunClients(void);
 void SV_SaveSpawnparms();
 
 void SV_SpawnServer(char *server);
+
+/*
+ * Protocol dependent write of model index to buffer
+ * (shared with pr_cmds.c)
+ */
+void SV_WriteModelIndex(sizebuf_t *sb, int c, unsigned int bits);
 
 #endif /* SERVER_H */

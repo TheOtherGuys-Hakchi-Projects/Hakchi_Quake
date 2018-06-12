@@ -50,53 +50,47 @@ NetadrToSockadr(netadr_t *a, struct sockaddr_in *s)
     memset(s, 0, sizeof(*s));
     s->sin_family = AF_INET;
 
-    *(int *)&s->sin_addr = *(int *)&a->ip;
+    s->sin_addr.s_addr = a->ip.l;
     s->sin_port = a->port;
 }
 
 static void
 SockadrToNetadr(struct sockaddr_in *s, netadr_t *a)
 {
-    *(int *)&a->ip = *(int *)&s->sin_addr;
+    a->ip.l = s->sin_addr.s_addr;
     a->port = s->sin_port;
 }
 
 qboolean
 NET_CompareBaseAdr(netadr_t a, netadr_t b)
 {
-    if (a.ip[0] == b.ip[0] && a.ip[1] == b.ip[1] && a.ip[2] == b.ip[2]
-	&& a.ip[3] == b.ip[3])
-	return true;
-    return false;
+    return a.ip.l == b.ip.l;
 }
 
 
 qboolean
 NET_CompareAdr(netadr_t a, netadr_t b)
 {
-    if (a.ip[0] == b.ip[0] && a.ip[1] == b.ip[1] && a.ip[2] == b.ip[2]
-	&& a.ip[3] == b.ip[3] && a.port == b.port)
-	return true;
-    return false;
+    return a.ip.l == b.ip.l && a.port == b.port;
 }
 
-char *
+const char *
 NET_AdrToString(netadr_t a)
 {
     static char s[64];
+    const byte *b = a.ip.b;
 
-    sprintf(s, "%i.%i.%i.%i:%i", a.ip[0], a.ip[1], a.ip[2], a.ip[3],
-	    ntohs(a.port));
+    sprintf(s, "%i.%i.%i.%i:%i", b[0], b[1], b[2], b[3], ntohs(a.port));
 
     return s;
 }
 
-char *
+const char *
 NET_BaseAdrToString(netadr_t a)
 {
     static char s[64];
 
-    sprintf(s, "%i.%i.%i.%i", a.ip[0], a.ip[1], a.ip[2], a.ip[3]);
+    sprintf(s, "%i.%i.%i.%i", a.ip.b[0], a.ip.b[1], a.ip.b[2], a.ip.b[3]);
 
     return s;
 }
@@ -112,7 +106,7 @@ NET_BaseAdrToString(netadr_t a)
  * =============
  */
 qboolean
-NET_StringToAdr(char *s, netadr_t *a)
+NET_StringToAdr(const char *s, netadr_t *a)
 {
     struct hostent *h;
     struct sockaddr_in sadr;
@@ -133,11 +127,12 @@ NET_StringToAdr(char *s, netadr_t *a)
 	}
 
     if (copy[0] >= '0' && copy[0] <= '9') {
-	*(int *)&sadr.sin_addr = inet_addr(copy);
+	sadr.sin_addr.s_addr = inet_addr(copy);
     } else {
-	if (!(h = gethostbyname(copy)))
+	h = gethostbyname(copy);
+	if (!h)
 	    return 0;
-	*(int *)&sadr.sin_addr = *(int *)h->h_addr_list[0];
+	sadr.sin_addr.s_addr = *(in_addr_t *)h->h_addr_list[0];
     }
 
     SockadrToNetadr(&sadr, a);
@@ -181,9 +176,8 @@ NET_SendPacket(int length, void *data, netadr_t to)
 
     NetadrToSockadr(&to, &addr);
 
-    ret =
-	sendto(net_socket, data, length, 0, (struct sockaddr *)&addr,
-	       sizeof(addr));
+    ret = sendto(net_socket, data, length, 0, (struct sockaddr *)&addr,
+		 sizeof(addr));
     if (ret == -1) {
 	if (errno == EWOULDBLOCK)
 	    return;

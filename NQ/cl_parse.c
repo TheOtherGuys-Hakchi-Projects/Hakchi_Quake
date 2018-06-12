@@ -19,28 +19,26 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 // cl_parse.c  -- parse a message received from the server
 
-#include "quakedef.h"
-#include "host.h"
+#include "cdaudio.h"
 #include "client.h"
-#include "protocol.h"
-#include "sound.h"
-#include "server.h"
-#include "net.h"
-#include "sys.h"
+#include "cmd.h"
 #include "console.h"
+#include "host.h"
+#include "model.h"
+#include "net.h"
+#include "protocol.h"
+#include "quakedef.h"
 #include "sbar.h"
 #include "screen.h"
-#include "cdaudio.h"
-#include "cmd.h"
+#include "server.h"
+#include "sound.h"
+#include "sys.h"
 
 #ifdef GLQUAKE
 # include "glquake.h"
-# include "gl_model.h"
-#else
-# include "model.h"
 #endif
 
-char *svc_strings[] = {
+static const char *svc_strings[] = {
     "svc_bad",
     "svc_nop",
     "svc_disconnect",
@@ -82,7 +80,22 @@ char *svc_strings[] = {
     "svc_finale",		// [string] music [string] text
     "svc_cdtrack",		// [byte] track [byte] looptrack
     "svc_sellscreen",
-    "svc_cutscene"
+    "svc_cutscene",
+    "",				// 35
+    "",				// 36
+    "svc_fitz_skybox",
+    "",				// 38
+    "",				// 39
+    "svc_fitz_bf",
+    "svc_fitz_fog",
+    "svc_fitz_spawnbaseline2",
+    "svc_fitz_spawnstatic2",
+    "svc_fitz_spawnstaticsound2",
+    "",				// 45
+    "",				// 46
+    "",				// 47
+    "",				// 48
+    "",				// 49
 };
 
 //=============================================================================
@@ -109,6 +122,27 @@ CL_EntityNum(int num)
     return &cl_entities[num];
 }
 
+
+static int
+CL_ReadSoundNum(int field_mask)
+{
+    switch (cl.protocol) {
+    case PROTOCOL_VERSION_NQ:
+    case PROTOCOL_VERSION_BJP:
+	return MSG_ReadByte();
+    case PROTOCOL_VERSION_BJP2:
+    case PROTOCOL_VERSION_BJP3:
+	return (unsigned short)MSG_ReadShort();
+    case PROTOCOL_VERSION_FITZ:
+	if (field_mask & SND_FITZ_LARGESOUND)
+	    return (unsigned short)MSG_ReadShort();
+	else
+	    return MSG_ReadByte();
+    default:
+	Host_Error("%s: Unknown protocol version (%d)\n", __func__,
+		   cl.protocol);
+    }
+}
 
 /*
 ==================
@@ -138,11 +172,15 @@ CL_ParseStartSoundPacket(void)
     else
 	attenuation = DEFAULT_SOUND_PACKET_ATTENUATION;
 
-    channel = MSG_ReadShort();
-    sound_num = MSG_ReadByte();
-
-    ent = channel >> 3;
-    channel &= 7;
+    if (cl.protocol == PROTOCOL_VERSION_FITZ && (field_mask & SND_FITZ_LARGEENTITY)) {
+	ent = (unsigned short)MSG_ReadShort();
+	channel = MSG_ReadByte();
+    } else {
+	channel = MSG_ReadShort();
+	ent = channel >> 3;
+	channel &= 7;
+    }
+    sound_num = CL_ReadSoundNum(field_mask);
 
     if (ent > MAX_EDICTS)
 	Host_Error("CL_ParseStartSoundPacket: ent = %i", ent);
@@ -221,8 +259,9 @@ CL_ParseServerInfo
 void
 CL_ParseServerInfo(void)
 {
-    char *str;
-    int i;
+    char *level;
+    const char *mapname;
+    int i, maxlen;
     int nummodels, numsounds;
     char model_precache[MAX_MODELS][MAX_QPATH];
     char sound_precache[MAX_SOUNDS][MAX_QPATH];
@@ -235,30 +274,33 @@ CL_ParseServerInfo(void)
 
 // parse protocol version number
     i = MSG_ReadLong();
-    if (i != PROTOCOL_VERSION) {
-	Con_Printf("Server returned version %i, not %i\n", i,
-		   PROTOCOL_VERSION);
+    if (!Protocol_Known(i)) {
+	Con_Printf("Server returned unknown protocol version %i\n", i);
 	return;
     }
+    cl.protocol = i;
+
 // parse maxclients
     cl.maxclients = MSG_ReadByte();
     if (cl.maxclients < 1 || cl.maxclients > MAX_SCOREBOARD) {
 	Con_Printf("Bad maxclients (%u) from server\n", cl.maxclients);
 	return;
     }
-    cl.scores = Hunk_AllocName(cl.maxclients * sizeof(*cl.scores), "scores");
+    cl.players = Hunk_AllocName(cl.maxclients * sizeof(*cl.players), "players");
 
 // parse gametype
     cl.gametype = MSG_ReadByte();
 
 // parse signon message
-    str = MSG_ReadString();
-    strncpy(cl.levelname, str, sizeof(cl.levelname) - 1);
+    level = cl.levelname;
+    maxlen = sizeof(cl.levelname);
+    snprintf(level, maxlen, "%s", MSG_ReadString());
 
 // seperate the printfs so the server message can have a color
-    Con_Printf
-	("\n\n\35\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\37\n\n");
-    Con_Printf("%c%s\n", 2, str);
+    Con_Printf("\n\n\35\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36"
+	       "\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\37\n\n");
+    Con_Printf("%c%s\n", 2, level);
+    Con_Printf("Using protocol %i\n", cl.protocol);
 
 //
 // first we go through and touch all of the precache data that still
@@ -269,33 +311,42 @@ CL_ParseServerInfo(void)
 // precache models
     memset(cl.model_precache, 0, sizeof(cl.model_precache));
     for (nummodels = 1;; nummodels++) {
-	str = MSG_ReadString();
-	if (!str[0])
+	char *in, *model;
+	in = MSG_ReadString();
+	if (!in[0])
 	    break;
-	if (nummodels == MAX_MODELS) {
-	    Con_Printf("Server sent too many model precaches\n");
+	if (nummodels == max_models(cl.protocol)) {
+	    Host_Error("Server sent too many model precaches (max = %d)",
+		       max_models(cl.protocol));
 	    return;
 	}
-	strcpy(model_precache[nummodels], str);
-	Mod_TouchModel(str);
+	model = model_precache[nummodels];
+	maxlen = sizeof(model_precache[0]);
+	snprintf(model, maxlen, "%s", in);
+	Mod_TouchModel(model);
     }
 
 // precache sounds
     memset(cl.sound_precache, 0, sizeof(cl.sound_precache));
     for (numsounds = 1;; numsounds++) {
-	str = MSG_ReadString();
-	if (!str[0])
+	char *in, *sound;
+	in = MSG_ReadString();
+	if (!in[0])
 	    break;
-	if (numsounds == MAX_SOUNDS) {
-	    Con_Printf("Server sent too many sound precaches\n");
+	if (numsounds == max_sounds(cl.protocol)) {
+	    Host_Error("Server sent too many sound precaches (max = %d)",
+		       max_sounds(cl.protocol));
 	    return;
 	}
-	strcpy(sound_precache[numsounds], str);
-	S_TouchSound(str);
+	sound = sound_precache[numsounds];
+	maxlen = sizeof(sound_precache[0]);
+	snprintf(sound, maxlen, "%s", in);
+	S_TouchSound(sound);
     }
 
 // copy the naked name of the map file to the cl structure
-    COM_StripExtension (COM_SkipPath(model_precache[1]), cl.mapname);
+    mapname = COM_SkipPath(model_precache[1]);
+    COM_StripExtension(mapname, cl.mapname, sizeof(cl.mapname));
 
 //
 // now we try to load everything else until a cache allocation fails
@@ -319,7 +370,8 @@ CL_ParseServerInfo(void)
 
 
 // local state
-    cl_entities[0].model = cl.worldmodel = cl.model_precache[1];
+    cl_entities[0].model = cl.model_precache[1];
+    cl.worldmodel = BrushModel(cl_entities[0].model);
 
     R_NewMap();
 
@@ -328,6 +380,45 @@ CL_ParseServerInfo(void)
     noclip_anglehack = false;	// noclip is turned off at start
 }
 
+
+static int
+CL_ReadModelIndex(unsigned int bits)
+{
+    switch (cl.protocol) {
+    case PROTOCOL_VERSION_NQ:
+	return MSG_ReadByte();
+    case PROTOCOL_VERSION_BJP:
+    case PROTOCOL_VERSION_BJP2:
+    case PROTOCOL_VERSION_BJP3:
+	return MSG_ReadShort();
+    case PROTOCOL_VERSION_FITZ:
+	if (bits & B_FITZ_LARGEMODEL)
+	    return MSG_ReadShort();
+	return MSG_ReadByte();
+    default:
+	Host_Error("%s: Unknown protocol version (%d)\n", __func__,
+		   cl.protocol);
+    }
+}
+
+static int
+CL_ReadModelFrame(unsigned int bits)
+{
+    switch (cl.protocol) {
+    case PROTOCOL_VERSION_NQ:
+    case PROTOCOL_VERSION_BJP:
+    case PROTOCOL_VERSION_BJP2:
+    case PROTOCOL_VERSION_BJP3:
+	return MSG_ReadByte();
+    case PROTOCOL_VERSION_FITZ:
+	if (bits & B_FITZ_LARGEFRAME)
+	    return MSG_ReadShort();
+	return MSG_ReadByte();
+    default:
+	Host_Error("%s: Unknown protocol version (%d)\n", __func__,
+		   cl.protocol);
+    }
+}
 
 /*
 ==================
@@ -338,11 +429,9 @@ If an entities model or origin changes from frame to frame, it must be
 relinked.  Other attributes can change without relinking.
 ==================
 */
-// FIXME - is this 16 == MAX_CLIENTS?
-int bitcounts[16];
 
 void
-CL_ParseUpdate(int bits)
+CL_ParseUpdate(unsigned int bits)
 {
     int i;
     model_t *model;
@@ -367,16 +456,19 @@ CL_ParseUpdate(int bits)
 	bits |= (i << 8);
     }
 
+    if (cl.protocol == PROTOCOL_VERSION_FITZ) {
+	if (bits & U_FITZ_EXTEND1)
+	    bits |= MSG_ReadByte() << 16;
+	if (bits & U_FITZ_EXTEND2)
+	    bits |= MSG_ReadByte() << 24;
+    }
+
     if (bits & U_LONGENTITY)
 	num = MSG_ReadShort();
     else
 	num = MSG_ReadByte();
 
     ent = CL_EntityNum(num);
-
-    for (i = 0; i < 16; i++)
-	if (bits & (1 << i))
-	    bitcounts[i]++;
 
     if (ent->msgtime != cl.mtime[1])
 	forcelink = true;	// no previous frame to lerp from
@@ -386,35 +478,26 @@ CL_ParseUpdate(int bits)
     ent->msgtime = cl.mtime[0];
 
     if (bits & U_MODEL) {
-	modnum = MSG_ReadByte();
-	if (modnum >= MAX_MODELS)
+	modnum = CL_ReadModelIndex(0);
+	if (modnum >= max_models(cl.protocol))
 	    Host_Error("CL_ParseModel: bad modnum");
     } else
 	modnum = ent->baseline.modelindex;
-
-    model = cl.model_precache[modnum];
-    if (model != ent->model) {
-	ent->model = model;
-	// automatic animation (torches, etc) can be either all together
-	// or randomized
-	if (model) {
-	    if (model->synctype == ST_RAND)
-		ent->syncbase = (float)(rand() & 0x7fff) / 0x7fff;
-	    else
-		ent->syncbase = 0.0;
-	} else
-	    forcelink = true;	// hack to make null model players work
-
-#ifdef GLQUAKE
-	if (num > 0 && num <= cl.maxclients)
-	    R_TranslatePlayerSkin(num - 1);
-#endif
-    }
 
     if (bits & U_FRAME)
 	ent->frame = MSG_ReadByte();
     else
 	ent->frame = ent->baseline.frame;
+
+    /* ANIMATION LERPING INFO */
+    if (ent->currentframe != ent->frame) {
+	/* TODO: invalidate things when they fall off the
+	   currententities list or haven't been updated for a while */
+	ent->previousframe = ent->currentframe;
+	ent->previousframetime = ent->currentframetime;
+	ent->currentframe = ent->frame;
+	ent->currentframetime = cl.time;
+    }
 
     if (bits & U_COLORMAP)
 	i = MSG_ReadByte();
@@ -425,7 +508,7 @@ CL_ParseUpdate(int bits)
     else {
 	if (i > cl.maxclients)
 	    Sys_Error("i >= cl.maxclients");
-	ent->colormap = cl.scores[i - 1].translations;
+	ent->colormap = cl.players[i - 1].translations;
     }
 
 #ifdef GLQUAKE
@@ -482,6 +565,65 @@ CL_ParseUpdate(int bits)
     else
 	ent->msg_angles[0][2] = ent->baseline.angles[2];
 
+    if (cl.protocol == PROTOCOL_VERSION_FITZ) {
+	if (bits & U_NOLERP) {
+	    // FIXME - TODO (called U_STEP in FQ)
+	}
+	if (bits & U_FITZ_ALPHA) {
+	    MSG_ReadByte(); // FIXME - TODO
+	}
+	if (bits & U_FITZ_FRAME2)
+	    ent->frame = (ent->frame & 0xFF) | (MSG_ReadByte() << 8);
+	if (bits & U_FITZ_MODEL2)
+	    modnum = (modnum & 0xFF)| (MSG_ReadByte() << 8);
+	if (bits & U_FITZ_LERPFINISH) {
+	    MSG_ReadByte(); // FIXME - TODO
+	}
+    }
+
+    model = cl.model_precache[modnum];
+    if (model != ent->model) {
+	ent->model = model;
+	// automatic animation (torches, etc) can be either all together
+	// or randomized
+	if (model) {
+	    if (model->synctype == ST_RAND)
+		ent->syncbase = (float)(rand() & 0x7fff) / 0x7fff;
+	    else
+		ent->syncbase = 0.0;
+	} else
+	    forcelink = true;	// hack to make null model players work
+
+#ifdef GLQUAKE
+	if (num > 0 && num <= cl.maxclients)
+	    R_TranslatePlayerSkin(num - 1);
+#endif
+    }
+
+    /* MOVEMENT LERP INFO - could I just extend baseline instead? */
+    if (!VectorCompare(ent->msg_origins[0], ent->currentorigin)) {
+	if (ent->currentorigintime) {
+	    VectorCopy(ent->currentorigin, ent->previousorigin);
+	    ent->previousorigintime = ent->currentorigintime;
+	} else {
+	    VectorCopy(ent->msg_origins[0], ent->previousorigin);
+	    ent->previousorigintime = cl.mtime[0];
+	}
+	VectorCopy(ent->msg_origins[0], ent->currentorigin);
+	ent->currentorigintime = cl.mtime[0];
+    }
+    if (!VectorCompare(ent->msg_angles[0], ent->currentangles)) {
+	if (ent->currentanglestime) {
+	    VectorCopy(ent->currentangles, ent->previousangles);
+	    ent->previousanglestime = ent->currentanglestime;
+	} else {
+	    VectorCopy(ent->msg_angles[0], ent->previousangles);
+	    ent->previousanglestime = cl.mtime[0];
+	}
+	VectorCopy(ent->msg_angles[0], ent->currentangles);
+	ent->currentanglestime = cl.mtime[0];
+    }
+
     if (bits & U_NOLERP)
 	ent->forcelink = true;
 
@@ -499,18 +641,22 @@ CL_ParseUpdate(int bits)
 CL_ParseBaseline
 ==================
 */
-void
-CL_ParseBaseline(entity_t *ent)
+static void
+CL_ParseBaseline(entity_t *ent, unsigned int bits)
 {
     int i;
 
-    ent->baseline.modelindex = MSG_ReadByte();
-    ent->baseline.frame = MSG_ReadByte();
+    ent->baseline.modelindex = CL_ReadModelIndex(bits);
+    ent->baseline.frame = CL_ReadModelFrame(bits);
     ent->baseline.colormap = MSG_ReadByte();
     ent->baseline.skinnum = MSG_ReadByte();
     for (i = 0; i < 3; i++) {
 	ent->baseline.origin[i] = MSG_ReadCoord();
 	ent->baseline.angles[i] = MSG_ReadAngle();
+    }
+
+    if (cl.protocol == PROTOCOL_VERSION_FITZ && (bits & B_FITZ_ALPHA)) {
+	MSG_ReadByte(); // FIXME - TODO
     }
 }
 
@@ -523,9 +669,16 @@ Server information pertaining to this client only
 ==================
 */
 void
-CL_ParseClientdata(int bits)
+CL_ParseClientdata(void)
 {
     int i, j;
+    unsigned int bits;
+
+    bits = (unsigned short)MSG_ReadShort();
+    if (bits & SU_FITZ_EXTEND1)
+	bits |= MSG_ReadByte() << 16;
+    if (bits & SU_FITZ_EXTEND2)
+	bits |= MSG_ReadByte() << 24;
 
     if (bits & SU_VIEWHEIGHT)
 	cl.viewheight = MSG_ReadChar();
@@ -552,12 +705,12 @@ CL_ParseClientdata(int bits)
 // [always sent]        if (bits & SU_ITEMS)
     i = MSG_ReadLong();
 
-    if (cl.items != i) {	// set flash times
+    if (cl.stats[STAT_ITEMS] != i) {	// set flash times
 	Sbar_Changed();
 	for (j = 0; j < 32; j++)
-	    if ((i & (1 << j)) && !(cl.items & (1 << j)))
+	    if ((i & (1 << j)) && !(cl.stats[STAT_ITEMS] & (1 << j)))
 		cl.item_gettime[j] = cl.time;
-	cl.items = i;
+	cl.stats[STAT_ITEMS] = i;
     }
 
     cl.onground = (bits & SU_ONGROUND) != 0;
@@ -578,7 +731,7 @@ CL_ParseClientdata(int bits)
     }
 
     if (bits & SU_WEAPON)
-	i = MSG_ReadByte();
+	i = CL_ReadModelIndex(0);
     else
 	i = 0;
     if (cl.stats[STAT_WEAPON] != i) {
@@ -619,6 +772,26 @@ CL_ParseClientdata(int bits)
 	    Sbar_Changed();
 	}
     }
+
+    /* FITZ Protocol */
+    if (bits & SU_FITZ_WEAPON2)
+	cl.stats[STAT_WEAPON] |= MSG_ReadByte() << 8;
+    if (bits & SU_FITZ_ARMOR2)
+	cl.stats[STAT_ARMOR] |= MSG_ReadByte() << 8;
+    if (bits & SU_FITZ_AMMO2)
+	cl.stats[STAT_AMMO] |= MSG_ReadByte() << 8;
+    if (bits & SU_FITZ_SHELLS2)
+	cl.stats[STAT_SHELLS] |= MSG_ReadByte() << 8;
+    if (bits & SU_FITZ_NAILS2)
+	cl.stats[STAT_NAILS] |= MSG_ReadByte() << 8;
+    if (bits & SU_FITZ_ROCKETS2)
+	cl.stats[STAT_ROCKETS] |= MSG_ReadByte() << 8;
+    if (bits & SU_FITZ_CELLS2)
+	cl.stats[STAT_CELLS] |= MSG_ReadByte() << 8;
+    if (bits & SU_FITZ_WEAPONFRAME2)
+	cl.stats[STAT_WEAPONFRAME] |= MSG_ReadByte() << 8;
+    if (bits & SU_FITZ_WEAPONALPHA)
+	MSG_ReadByte(); // FIXME - TODO
 }
 
 /*
@@ -635,11 +808,11 @@ CL_NewTranslation(int slot)
 
     if (slot > cl.maxclients)
 	Sys_Error("%s: slot > cl.maxclients", __func__);
-    dest = cl.scores[slot].translations;
+    dest = cl.players[slot].translations;
     source = vid.colormap;
-    memcpy(dest, vid.colormap, sizeof(cl.scores[slot].translations));
-    top = cl.scores[slot].colors & 0xf0;
-    bottom = (cl.scores[slot].colors & 15) << 4;
+    memcpy(dest, vid.colormap, sizeof(cl.players[slot].translations));
+    top = cl.players[slot].topcolor;
+    bottom = cl.players[slot].bottomcolor;
 #ifdef GLQUAKE
     R_TranslatePlayerSkin(slot);
 #endif
@@ -665,7 +838,7 @@ CL_ParseStatic
 =====================
 */
 void
-CL_ParseStatic(void)
+CL_ParseStatic(unsigned int bits)
 {
     entity_t *ent;
     int i;
@@ -675,7 +848,7 @@ CL_ParseStatic(void)
 	Host_Error("Too many static entities");
     ent = &cl_static_entities[i];
     cl.num_statics++;
-    CL_ParseBaseline(ent);
+    CL_ParseBaseline(ent, bits);
 
 // copy it to the current state
     ent->model = cl.model_precache[ent->baseline.modelindex];
@@ -684,9 +857,41 @@ CL_ParseStatic(void)
     ent->skinnum = ent->baseline.skinnum;
     ent->effects = ent->baseline.effects;
 
+    /* Initilise frames for model lerp */
+    ent->currentframe = ent->baseline.frame;
+    ent->previousframe = ent->baseline.frame;
+    ent->currentframetime = cl.time;
+    ent->previousframetime = cl.time;
+
+    /* Initialise movelerp data */
+    ent->previousorigintime = cl.time;
+    ent->currentorigintime = cl.time;
+    VectorCopy(ent->baseline.origin, ent->previousorigin);
+    VectorCopy(ent->baseline.origin, ent->currentorigin);
+    VectorCopy(ent->baseline.angles, ent->previousangles);
+    VectorCopy(ent->baseline.angles, ent->currentangles);
+
     VectorCopy(ent->baseline.origin, ent->origin);
     VectorCopy(ent->baseline.angles, ent->angles);
     R_AddEfrags(ent);
+}
+
+
+static int
+CL_ReadSoundNum_Static(void)
+{
+    switch (cl.protocol) {
+    case PROTOCOL_VERSION_NQ:
+    case PROTOCOL_VERSION_BJP:
+    case PROTOCOL_VERSION_BJP3:
+    case PROTOCOL_VERSION_FITZ:
+	return MSG_ReadByte();
+    case PROTOCOL_VERSION_BJP2:
+	return MSG_ReadShort();
+    default:
+	Host_Error("%s: Unknown protocol version (%d)\n", __func__,
+		   cl.protocol);
+    }
 }
 
 /*
@@ -694,7 +899,7 @@ CL_ParseStatic(void)
 CL_ParseStaticSound
 ===================
 */
-void
+static void
 CL_ParseStaticSound(void)
 {
     vec3_t org;
@@ -703,17 +908,33 @@ CL_ParseStaticSound(void)
 
     for (i = 0; i < 3; i++)
 	org[i] = MSG_ReadCoord();
-    sound_num = MSG_ReadByte();
+    sound_num = CL_ReadSoundNum_Static();
     vol = MSG_ReadByte();
     atten = MSG_ReadByte();
 
     S_StaticSound(cl.sound_precache[sound_num], org, vol, atten);
 }
 
+/* FITZ protocol */
+static void
+CL_ParseFitzStaticSound2(void)
+{
+    vec3_t org;
+    int sound_num, vol, atten;
+    int i;
+
+    for (i = 0; i < 3; i++)
+	org[i] = MSG_ReadCoord();
+    sound_num = MSG_ReadShort();
+    vol = MSG_ReadByte();
+    atten = MSG_ReadByte();
+
+    S_StaticSound(cl.sound_precache[sound_num], org, vol, atten);
+}
 
 /* helper function (was a macro, hence the CAPS) */
 static void
-SHOWNET(char *msg)
+SHOWNET(const char *msg)
 {
     if (cl_shownet.value == 2)
 	Con_Printf("%3i:%s\n", msg_readcount - 1, msg);
@@ -728,8 +949,14 @@ CL_ParseServerMessage
 void
 CL_ParseServerMessage(void)
 {
-    int cmd;
-    int i;
+    unsigned int bits;
+    int i, cmd, prevcmd;
+    int playernum, version, stylenum, signon, statnum;
+    int stopsound, entitynum, channel;
+    byte colors;
+    player_info_t *player;
+    lightstyle_t *style;
+    const char *stylemap, *name;
 
 //
 // if recording demos, copy the message out
@@ -743,6 +970,7 @@ CL_ParseServerMessage(void)
 //
 // parse the message
 //
+    prevcmd = svc_bad;
     MSG_BeginReading();
 
     while (1) {
@@ -775,15 +1003,15 @@ CL_ParseServerMessage(void)
 	    break;
 
 	case svc_clientdata:
-	    i = MSG_ReadShort();
-	    CL_ParseClientdata(i);
+	    CL_ParseClientdata();
 	    break;
 
 	case svc_version:
-	    i = MSG_ReadLong();
-	    if (i != PROTOCOL_VERSION)
-		Host_Error("%s: Server is protocol %i instead of %i", __func__,
-			   i, PROTOCOL_VERSION);
+	    version = MSG_ReadLong();
+	    if (!Protocol_Known(version))
+		Host_Error("%s: Server returned unknown protocol version %i",
+			   __func__, version);
+	    cl.protocol = version;
 	    break;
 
 	case svc_disconnect:
@@ -798,7 +1026,7 @@ CL_ParseServerMessage(void)
 	    break;
 
 	case svc_stufftext:
-	    Cbuf_AddText(MSG_ReadString());
+	    Cbuf_AddText("%s", MSG_ReadString());
 	    break;
 
 	case svc_damage:
@@ -820,11 +1048,13 @@ CL_ParseServerMessage(void)
 	    break;
 
 	case svc_lightstyle:
-	    i = MSG_ReadByte();
-	    if (i >= MAX_LIGHTSTYLES)
+	    stylenum = MSG_ReadByte();
+	    if (stylenum >= MAX_LIGHTSTYLES)
 		Sys_Error("svc_lightstyle > MAX_LIGHTSTYLES");
-	    strcpy(cl_lightstyle[i].map, MSG_ReadString());
-	    cl_lightstyle[i].length = strlen(cl_lightstyle[i].map);
+	    stylemap = MSG_ReadString();
+	    style = cl_lightstyle + stylenum;
+	    snprintf(style->map, MAX_STYLESTRING, "%s", stylemap);
+	    style->length = strlen(style->map);
 	    break;
 
 	case svc_sound:
@@ -832,33 +1062,44 @@ CL_ParseServerMessage(void)
 	    break;
 
 	case svc_stopsound:
-	    i = MSG_ReadShort();
-	    S_StopSound(i >> 3, i & 7);
+	    stopsound = MSG_ReadShort(); /* 3-bit channel encoded in lsb */
+	    entitynum = stopsound >> 3;
+	    channel = stopsound & 7;
+	    S_StopSound(entitynum, channel);
 	    break;
 
 	case svc_updatename:
 	    Sbar_Changed();
-	    i = MSG_ReadByte();
-	    if (i >= cl.maxclients)
+	    playernum = MSG_ReadByte();
+	    if (playernum >= cl.maxclients)
 		Host_Error("%s: svc_updatename > MAX_SCOREBOARD", __func__);
-	    strcpy(cl.scores[i].name, MSG_ReadString());
+	    name = MSG_ReadString();
+	    player = cl.players + playernum;
+	    snprintf(player->name, MAX_SCOREBOARDNAME, "%s", name);
 	    break;
 
 	case svc_updatefrags:
 	    Sbar_Changed();
-	    i = MSG_ReadByte();
-	    if (i >= cl.maxclients)
+	    playernum = MSG_ReadByte();
+	    if (playernum >= cl.maxclients)
 		Host_Error("%s: svc_updatefrags > MAX_SCOREBOARD", __func__);
-	    cl.scores[i].frags = MSG_ReadShort();
+	    player = cl.players + playernum;
+	    player->frags = MSG_ReadShort();
 	    break;
 
 	case svc_updatecolors:
 	    Sbar_Changed();
-	    i = MSG_ReadByte();
-	    if (i >= cl.maxclients)
+	    playernum = MSG_ReadByte();
+	    if (playernum >= cl.maxclients)
 		Host_Error("%s: svc_updatecolors > MAX_SCOREBOARD", __func__);
-	    cl.scores[i].colors = MSG_ReadByte();
-	    CL_NewTranslation(i);
+	    colors = MSG_ReadByte();
+	    player = cl.players + playernum;
+	    player->topcolor = (colors & 0xf0) >> 4;
+	    player->bottomcolor = colors & 0x0f;
+	    /* FIXME - is this the right check for current player? */
+	    if (playernum == cl.viewentity)
+		cl_color.value = colors;
+	    CL_NewTranslation(playernum);
 	    break;
 
 	case svc_particle:
@@ -866,40 +1107,46 @@ CL_ParseServerMessage(void)
 	    break;
 
 	case svc_spawnbaseline:
-	    i = MSG_ReadShort();
+	    entitynum = MSG_ReadShort();
 	    // must use CL_EntityNum() to force cl.num_entities up
-	    CL_ParseBaseline(CL_EntityNum(i));
+	    CL_ParseBaseline(CL_EntityNum(entitynum), 0);
 	    break;
+
+	case svc_fitz_spawnbaseline2:
+	    /* FIXME - check here that protocol is FITZ? => Host_Error() */
+	    entitynum = MSG_ReadShort();
+	    bits = MSG_ReadByte();
+	    // must use CL_EntityNum() to force cl.num_entities up
+	    CL_ParseBaseline(CL_EntityNum(entitynum), bits);
+	    break;
+
 	case svc_spawnstatic:
-	    CL_ParseStatic();
+	    CL_ParseStatic(0);
 	    break;
+
+	case svc_fitz_spawnstatic2:
+	    /* FIXME - check here that protocol is FITZ? => Host_Error() */
+	    bits = MSG_ReadByte();
+	    CL_ParseStatic(bits);
+	    break;
+
 	case svc_temp_entity:
 	    CL_ParseTEnt();
 	    break;
 
 	case svc_setpause:
-	    {
-		cl.paused = MSG_ReadByte();
-
-		if (cl.paused) {
-		    CDAudio_Pause();
-#ifdef _WIN32
-		    VID_HandlePause(true);
-#endif
-		} else {
-		    CDAudio_Resume();
-#ifdef _WIN32
-		    VID_HandlePause(false);
-#endif
-		}
-	    }
+	    cl.paused = MSG_ReadByte();
+	    if (cl.paused)
+		CDAudio_Pause();
+	    else
+		CDAudio_Resume();
 	    break;
 
 	case svc_signonnum:
-	    i = MSG_ReadByte();
-	    if (i <= cls.signon)
-		Host_Error("Received signon %i when at %i", i, cls.signon);
-	    cls.signon = i;
+	    signon = MSG_ReadByte();
+	    if (signon <= cls.signon)
+		Host_Error("Received signon %d when at %d", signon, cls.signon);
+	    cls.signon = signon;
 	    CL_SignonReply();
 	    break;
 
@@ -912,14 +1159,19 @@ CL_ParseServerMessage(void)
 	    break;
 
 	case svc_updatestat:
-	    i = MSG_ReadByte();
-	    if (i < 0 || i >= MAX_CL_STATS)
-		Sys_Error("svc_updatestat: %i is invalid", i);
-	    cl.stats[i] = MSG_ReadLong();;
+	    statnum = MSG_ReadByte();
+	    if (statnum < 0 || statnum >= MAX_CL_STATS)
+		Sys_Error("svc_updatestat: %d is invalid", statnum);
+	    cl.stats[statnum] = MSG_ReadLong();
 	    break;
 
 	case svc_spawnstaticsound:
 	    CL_ParseStaticSound();
+	    break;
+
+	case svc_fitz_spawnstaticsound2:
+	    /* FIXME - check here that protocol is FITZ? => Host_Error() */
+	    CL_ParseFitzStaticSound2();
 	    break;
 
 	case svc_cdtrack:
@@ -956,8 +1208,28 @@ CL_ParseServerMessage(void)
 	    Cmd_ExecuteString("help", src_command);
 	    break;
 
+	/* Various FITZ protocol messages - FIXME - !protocol => Host_Error */
+	case svc_fitz_skybox:
+	    MSG_ReadString(); // FIXME - TODO
+	    break;
+
+	case svc_fitz_bf:
+	    Cmd_ExecuteString("bf", src_command);
+	    break;
+
+	case svc_fitz_fog:
+	    /* FIXME - TODO */
+	    MSG_ReadByte(); // density
+	    MSG_ReadByte(); // red
+	    MSG_ReadByte(); // green
+	    MSG_ReadByte(); // blue
+	    MSG_ReadShort(); // time
+	    break;
+
 	default:
-	    Host_Error("%s: Illegible server message", __func__);
+	    Host_Error("%s: Illegible server message. Previous was %s",
+		       __func__, svc_strings[prevcmd]);
 	}
+	prevcmd = cmd;
     }
 }

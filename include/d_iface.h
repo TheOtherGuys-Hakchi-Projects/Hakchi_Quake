@@ -29,6 +29,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "mathlib.h"
 #include "model.h"
 #include "qtypes.h"
+#include "vid.h"
 
 // d_iface.h: interface header file for rasterization driver modules
 
@@ -64,17 +65,6 @@ typedef struct particle_s {
 
 #define PARTICLE_Z_CLIP	8.0
 
-typedef struct polyvert_s {
-    float u, v, zi, s, t;
-} polyvert_t;
-
-typedef struct polydesc_s {
-    int numverts;
-    float nearzi;
-    msurface_t *pcurrentface;
-    polyvert_t *pverts;
-} polydesc_t;
-
 // !!! if this is changed, it must be changed in d_ifacea.h too !!!
 typedef struct finalvert_s {
     int v[6];			// u, v, s, t, l, 1/z
@@ -85,7 +75,6 @@ typedef struct finalvert_s {
 // !!! if this is changed, it must be changed in d_ifacea.h too !!!
 typedef struct {
     void *pskin;
-    maliasskindesc_t *pskindesc;
     int skinwidth;
     int skinheight;
     mtriangle_t *ptriangles;
@@ -106,30 +95,13 @@ typedef struct {
     // there's room for an extra element at [nump],
     //  if the driver wants to duplicate element [0] at
     //  element [nump] to avoid dealing with wrapping
-    mspriteframe_t *pspriteframe;
+    const mspriteframe_t *pspriteframe;
     vec3_t vup, vright, vpn;	// in worldspace
     float nearzi;
 } spritedesc_t;
 
-typedef struct {
-    int u, v;
-    float zi;
-    int color;
-} zpointdesc_t;
-
 extern cvar_t r_drawflat;
 extern int r_framecount;	// sequence # of current frame since Quake started
-extern qboolean r_drawpolys;	// 1 if driver wants clipped polygons
-
-				//  rather than a span list
-extern qboolean r_drawculledpolys;	// 1 if driver wants clipped polygons
-
-				    // that have been culled by the edge
-				    // list
-extern qboolean r_worldpolysbacktofront;	// 1 if driver wants polygons
-
-					  //  delivered back to front rather
-					  //  than front to back
 extern qboolean r_recursiveaffinetriangles;	// true if a driver wants to use
 
 					    //  recursive triangular subdivison
@@ -146,11 +118,8 @@ extern qboolean r_dowarp;
 
 extern affinetridesc_t r_affinetridesc;
 extern spritedesc_t r_spritedesc;
-extern zpointdesc_t r_zpointdesc;
-extern polydesc_t r_polydesc;
 
 extern int d_con_indirect;	// if 0, Quake will draw console directly
-
 				//  to vid.buffer; if 1, Quake will
 				//  draw console via D_DrawRect. Must be
 				//  defined by driver
@@ -159,16 +128,15 @@ extern vec3_t r_pright, r_pup, r_ppn;
 
 
 void D_Aff8Patch(void *pcolormap);
-void D_BeginDirectRect(int x, int y, byte *pbitmap, int width, int height);
+void D_BeginDirectRect(int x, int y, const byte *pbitmap, int width,
+		       int height);
 void D_DisableBackBufferAccess(void);
 void D_EndDirectRect(int x, int y, int width, int height);
 void D_PolysetDraw(void);
 void D_PolysetDrawFinalVerts(finalvert_t *fv, int numverts);
 void D_DrawParticle(particle_t *pparticle);
-void D_DrawPoly(void);
 void D_DrawSprite(void);
 void D_DrawSurfaces(void);
-void D_DrawZPoint(void);
 void D_EnableBackBufferAccess(void);
 void D_EndParticles(void);
 void D_Init(void);

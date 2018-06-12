@@ -53,6 +53,8 @@ LOutOfRange:
 	movl	$0xFFFFFFFF,%eax
 	ret
 
+#ifndef SERVERONLY
+
 #define	in	4
 #define out	8
 
@@ -98,7 +100,7 @@ C(TransformVector):
 	fstps	(%edx)		// out[0]
 
 	ret
-
+#endif /* !SERVERONLY */
 
 #define EMINS	4+4
 #define EMAXS	4+8
@@ -393,12 +395,12 @@ LSetSides:
 	fcomps	pl_dist(%edx)
 	andb	$1,%ah
 	xorb	$1,%ah
-	addb	%ah,%cl
+	addb	%ah,%cl			// <- PSIDE_FRONT(1), if dist1 >= p->dist
 
 	fnstsw	%ax
 	andb	$1,%ah
 	addb	%ah,%ah
-	addb	%ah,%cl
+	addb	%ah,%cl			// += PSIDE_BACK(2), if dist2 < p->dist
 
 //	return sides;
 

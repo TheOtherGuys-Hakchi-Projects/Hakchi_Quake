@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef QUAKEDEF_H
 #define QUAKEDEF_H
 
+#include <inttypes.h>
 #include <math.h>
 #include <string.h>
 #include <stdarg.h>
@@ -35,24 +36,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 //define        PARANOID                        // speed sapping error checking
 
-#define	GAMENAME	"id1"	// directory to look in by default
-
-/* UNALIGNED_OK - undef if unaligned accesses are not supported */
-#ifdef USE_X86_ASM
-#define UNALIGNED_OK
-#else
-#undef UNALIGNED_OK
-#endif
-
 // !!! if this is changed, it must be changed in d_ifacea.h too !!!
 #define CACHE_SIZE	32	// used to align key data structures
-
-#define UNUSED(x)	(x = x)	// for pesky compiler / lint warnings
+#define CACHE_PAD_ARRAY(elements, type)	\
+    ((elements) + ((CACHE_SIZE - 1) / sizeof(type)) + 1)
+#define CACHE_ALIGN_PTR(dst) ({						\
+	const uintptr_t p = (uintptr_t)&(dst)[0];			\
+	(typeof(&(dst)[0]))((p + CACHE_SIZE - 1) & ~(CACHE_SIZE - 1));	\
+})
 
 #define	MINIMUM_MEMORY		0x550000
 #define	MINIMUM_MEMORY_LEVELPAK	(MINIMUM_MEMORY + 0x100000)
-
-#define MAX_NUM_ARGVS	50
 
 // up / down
 #define	PITCH	0
@@ -69,17 +63,23 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define	ON_EPSILON	0.1	// point on plane side epsilon
 
-#define	MAX_MSGLEN	8000	// max length of a reliable message
-#define	MAX_DATAGRAM	1024	// max length of unreliable message
+#define	MAX_MSGLEN	32768	// max length of a reliable message
+#define	MAX_DATAGRAM	32768	// max length of unreliable message
+				// (driver MTU may be lower)
 
 //
 // per-level limits
 //
 //#define       MAX_EDICTS      600     // FIXME: ouch! ouch! ouch!
-#define	MAX_EDICTS	2048	// FIXME: Arbitrary increase, make dynamic?
+#define	MAX_EDICTS	4096	// FIXME: Arbitrary increase, make dynamic?
 #define	MAX_LIGHTSTYLES	64
-#define	MAX_MODELS	256	// these are sent over the net as bytes
-#define	MAX_SOUNDS	256	// so they cannot be blindly increased
+/*
+ * Model and sound limits depend on the net protocol version being used
+ * Standard protocol sends the model/sound index as a byte (max = 256), but
+ * other protocols may send as a short (up to 65536, potentially).
+ */
+#define MAX_MODELS      2048
+#define MAX_SOUNDS      1024
 
 #define	SAVEGAME_COMMENT_LENGTH	39
 
@@ -104,6 +104,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define STAT_TOTALMONSTERS      12
 #define STAT_SECRETS            13 /* bumped client side by svc_foundsecret */
 #define STAT_MONSTERS           14 /* bumped by svc_killedmonster */
+#define STAT_ITEMS              15
 
 // stock defines
 
@@ -198,10 +199,9 @@ typedef struct {
 // available for the program to use
 
 typedef struct {
-    char *basedir;
-    char *cachedir;		// for development over ISDN lines
+    const char *basedir;
     int argc;
-    char **argv;
+    const char **argv;
     void *membase;
     int memsize;
 } quakeparms_t;

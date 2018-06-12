@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 // d_local.h:  private rasterization driver defs
 
+#include "bspfile.h"
 #include "r_shared.h"
 
 //
@@ -56,8 +57,6 @@ typedef struct sspan_s {
     int u, v, count;
 } sspan_t;
 
-extern cvar_t d_subdiv16;
-
 extern float scale_for_mip;
 
 extern qboolean d_roverwrapped;
@@ -74,6 +73,8 @@ fixed16_t bbextents, bbextentt;
 
 void D_DrawSpans8(espan_t *pspans);
 void D_DrawSpans16(espan_t *pspans);
+extern void (*D_DrawSpans)(espan_t *pspan);
+
 void D_DrawZSpans(espan_t *pspans);
 void Turbulent8(espan_t *pspan);
 void D_SpriteDrawSpans(sspan_t * pspan);
@@ -83,7 +84,8 @@ void D_DrawSkyScans16(espan_t *pspan);
 
 void R_ShowSubDiv(void);
 void (*prealspandrawer) (void);
-surfcache_t *D_CacheSurface(msurface_t *surface, int miplevel);
+surfcache_t *D_CacheSurface(const entity_t *e, msurface_t *surface,
+			    int miplevel);
 
 #ifdef USE_X86_ASM
 extern void D_PolysetAff8Start(void);
@@ -104,10 +106,7 @@ extern pixel_t *d_viewbuffer;
 
 extern short *zspantable[MAXHEIGHT];
 
-extern int d_aflatcolor;
 extern int d_minmip;
 extern float d_scalemip[3];
-
-extern void (*d_drawspans) (espan_t *pspan);
 
 #endif /* D_LOCAL_H */

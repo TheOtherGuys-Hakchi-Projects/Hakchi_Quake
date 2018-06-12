@@ -17,13 +17,20 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 */
-// d_surf.c: rasterization driver surface heap manager
+
+/* rasterization driver surface heap manager */
+
+#include <stdint.h>
 
 #include "console.h"
 #include "d_local.h"
 #include "quakedef.h"
 #include "r_local.h"
 #include "sys.h"
+
+#ifdef NQ_HACK
+#include "host.h"
+#endif
 
 float surfscale;
 qboolean r_cache_thrash;	// set if surface cache is thrashing
@@ -143,7 +150,7 @@ D_SCAlloc(int width, int size)
     if ((size <= 0) || (size > 0x10000))
 	Sys_Error("%s: bad cache size %d", __func__, size);
 
-    size = (unsigned long)&((surfcache_t *)0)->data[size];
+    size = offsetof(surfcache_t, data[size]);
     size = (size + 3) & ~3;
     if (size > sc_size)
 	Sys_Error("%s: %i > cache size", __func__, size);
@@ -260,14 +267,14 @@ D_CacheSurface
 ================
 */
 surfcache_t *
-D_CacheSurface(msurface_t *surface, int miplevel)
+D_CacheSurface(const entity_t *e, msurface_t *surface, int miplevel)
 {
     surfcache_t *cache;
 
 //
 // if the surface is animating or flashing, flush the cache
 //
-    r_drawsurf.texture = R_TextureAnimation(surface->texinfo->texture);
+    r_drawsurf.texture = R_TextureAnimation(e, surface->texinfo->texture);
     r_drawsurf.lightadj[0] = d_lightstylevalue[surface->styles[0]];
     r_drawsurf.lightadj[1] = d_lightstylevalue[surface->styles[1]];
     r_drawsurf.lightadj[2] = d_lightstylevalue[surface->styles[2]];
@@ -295,14 +302,6 @@ D_CacheSurface(msurface_t *surface, int miplevel)
     r_drawsurf.rowbytes = r_drawsurf.surfwidth;
     r_drawsurf.surfheight = surface->extents[1] >> miplevel;
 
-    // TYR - finding a bug...
-    if (r_drawsurf.surfwidth * r_drawsurf.surfheight == 0) {
-	printf("Error coming up...\n"
-	       "  surface->extents[0] == %hi\n"
-	       "  surface->extents[1] == %hi\n"
-	       "  miplevel == %i\n",
-	       surface->extents[0], surface->extents[1], miplevel);
-    }
 //
 // allocate memory if needed
 //

@@ -19,6 +19,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 // cl_main.c  -- client main loop
 
+#include <ctype.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <winsock2.h>
+#include "winquake.h"
+#else
+#include <sys/types.h>
+#include <netinet/in.h>
+#endif
+
 #include "cdaudio.h"
 #include "client.h"
 #include "cmd.h"
@@ -27,29 +38,23 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "input.h"
 #include "keys.h"
 #include "menu.h"
+#include "model.h"
 #include "pmove.h"
 #include "quakedef.h"
 #include "sbar.h"
 #include "screen.h"
 #include "sys.h"
 #include "view.h"
+#include "wad.h"
 
-#ifdef GLQUAKE
-#include "gl_model.h"
-#else
-#include "model.h"
+#ifndef GLQUAKE
 #include "d_iface.h"
 #endif
 
-#ifdef _WIN32
-#include "winsock.h"
-#include "winquake.h"
-#else
-#include <sys/types.h>
-#include <netinet/in.h>
-#endif
+wad_t host_gfx; /* "gfx.wad" */
 
-#include <ctype.h>
+/* Argument completion function for the skin cvar */
+static struct stree_root * CL_Skin_Arg_f(const char *arg);
 
 // FIXME - header hacks
 extern cvar_t cl_hightrack;
@@ -83,6 +88,8 @@ cvar_t m_yaw = { "m_yaw", "0.022" };
 cvar_t m_forward = { "m_forward", "1" };
 cvar_t m_side = { "m_side", "0.8" };
 
+cvar_t m_freelook = { "m_freelook", "0", true };
+
 cvar_t entlatency = { "entlatency", "20" };
 cvar_t cl_predict_players = { "cl_predict_players", "1" };
 cvar_t cl_predict_players2 = { "cl_predict_players2", "1" };
@@ -99,12 +106,20 @@ cvar_t password = { "password", "", false, true };
 cvar_t spectator = { "spectator", "", false, true };
 cvar_t name = { "name", "unnamed", true, true };
 cvar_t team = { "team", "", true, true };
-cvar_t skin = { "skin", "", true, true };
 cvar_t topcolor = { "topcolor", "0", true, true };
 cvar_t bottomcolor = { "bottomcolor", "0", true, true };
 cvar_t rate = { "rate", "2500", true, true };
 cvar_t noaim = { "noaim", "0", true, true };
 cvar_t msg = { "msg", "1", true, true };
+
+cvar_t skin = {
+    .name = "skin",
+    .string = "",
+    .archive = true,
+    .info = true,
+    .completion = CL_Skin_Arg_f
+};
+
 
 client_static_t cls;
 client_state_t cl;
@@ -115,23 +130,15 @@ entity_t cl_static_entities[MAX_STATIC_ENTITIES];
 lightstyle_t cl_lightstyle[MAX_LIGHTSTYLES];
 dlight_t cl_dlights[MAX_DLIGHTS];
 
-// refresh list
-// this is double buffered so the last frame
-// can be scanned for oldorigins of trailing objects
-int cl_numvisedicts, cl_oldnumvisedicts;
-entity_t *cl_visedicts, *cl_oldvisedicts;
-entity_t cl_visedicts_list[2][MAX_VISEDICTS];
-
 double connect_time = -1;	// for connection retransmits
 
 quakeparms_t host_parms;
 
 qboolean host_initialized;	// true if into command execution
-qboolean nomaster;
 
 double host_frametime;
 double realtime;		// without any filtering or bounding
-double oldrealtime;		// last frame run
+static double oldrealtime;	// last frame run
 int host_framecount;
 
 int host_hunklevel;
@@ -148,36 +155,8 @@ cvar_t developer = { "developer", "0" };
 
 int fps_count;
 
-jmp_buf host_abort;
-
-void Master_Connect_f(void);
-
-float server_version = 0;	// version of server we connected to
-
-char emodel_name[] =
-    { 'e' ^ 0xff, 'm' ^ 0xff, 'o' ^ 0xff, 'd' ^ 0xff, 'e' ^ 0xff, 'l' ^ 0xff,
-    0
-};
-char pmodel_name[] =
-    { 'p' ^ 0xff, 'm' ^ 0xff, 'o' ^ 0xff, 'd' ^ 0xff, 'e' ^ 0xff, 'l' ^ 0xff,
-    0
-};
-char prespawn_name[] =
-    { 'p' ^ 0xff, 'r' ^ 0xff, 'e' ^ 0xff, 's' ^ 0xff, 'p' ^ 0xff, 'a' ^ 0xff,
-    'w' ^ 0xff, 'n' ^ 0xff,
-    ' ' ^ 0xff, '%' ^ 0xff, 'i' ^ 0xff, ' ' ^ 0xff, '0' ^ 0xff, ' ' ^ 0xff,
-    '%' ^ 0xff, 'i' ^ 0xff, 0
-};
-char modellist_name[] =
-    { 'm' ^ 0xff, 'o' ^ 0xff, 'd' ^ 0xff, 'e' ^ 0xff, 'l' ^ 0xff, 'l' ^ 0xff,
-    'i' ^ 0xff, 's' ^ 0xff, 't' ^ 0xff,
-    ' ' ^ 0xff, '%' ^ 0xff, 'i' ^ 0xff, ' ' ^ 0xff, '%' ^ 0xff, 'i' ^ 0xff, 0
-};
-char soundlist_name[] =
-    { 's' ^ 0xff, 'o' ^ 0xff, 'u' ^ 0xff, 'n' ^ 0xff, 'd' ^ 0xff, 'l' ^ 0xff,
-    'i' ^ 0xff, 's' ^ 0xff, 't' ^ 0xff,
-    ' ' ^ 0xff, '%' ^ 0xff, 'i' ^ 0xff, ' ' ^ 0xff, '%' ^ 0xff, 'i' ^ 0xff, 0
-};
+static jmp_buf host_abort;
+static float server_version = 0;// version of server we connected to
 
 /*
 ==================
@@ -311,7 +290,7 @@ CL_Connect_f
 void
 CL_Connect_f(void)
 {
-    char *server;
+    const char *server;
 
     if (Cmd_Argc() != 2) {
 	Con_Printf("usage: connect <server>\n");
@@ -379,7 +358,6 @@ CL_Rcon_f(void)
 
     NET_SendPacket(strlen(message) + 1, message, to);
 }
-
 
 /*
 =====================
@@ -457,7 +435,6 @@ CL_Disconnect(void)
 	Netchan_Transmit(&cls.netchan, 6, final);
 
 	cls.state = ca_disconnected;
-
 	cls.demoplayback = cls.demorecording = cls.timedemo = false;
     }
     Cam_Reset();
@@ -468,7 +445,7 @@ CL_Disconnect(void)
     }
 
     CL_StopUpload();
-
+    cl.intermission = 0; /* FIXME - for SCR_UpdateScreen */
 }
 
 void
@@ -617,7 +594,7 @@ CL_FullInfo_f(void)
     char key[512];
     char value[512];
     char *o;
-    char *s;
+    const char *s;
 
     if (Cmd_Argc() != 2) {
 	Con_Printf("fullinfo <complete info string>\n");
@@ -647,7 +624,7 @@ CL_FullInfo_f(void)
 	if (*s)
 	    s++;
 
-	if (!strcasecmp(key, pmodel_name) || !strcasecmp(key, emodel_name))
+	if (!strcasecmp(key, "pmodel") || !strcasecmp(key, "emodel"))
 	    continue;
 
 	Info_SetValueForKey(cls.userinfo, key, value, MAX_INFO_STRING);
@@ -672,8 +649,7 @@ CL_SetInfo_f(void)
 	Con_Printf("usage: setinfo [ <key> <value> ]\n");
 	return;
     }
-    if (!strcasecmp(Cmd_Argv(1), pmodel_name)
-	|| !strcmp(Cmd_Argv(1), emodel_name))
+    if (!strcasecmp(Cmd_Argv(1), "pmodel") || !strcmp(Cmd_Argv(1), "emodel"))
 	return;
 
     Info_SetValueForKey(cls.userinfo, Cmd_Argv(1), Cmd_Argv(2),
@@ -696,7 +672,8 @@ CL_Packet_f(void)
 {
     char send[2048];
     int i, l;
-    char *in, *out;
+    const char *in;
+    char *out;
     netadr_t adr;
 
     if (Cmd_Argc() != 3) {
@@ -819,7 +796,7 @@ Responses to broadcasts, etc
 void
 CL_ConnectionlessPacket(void)
 {
-    char *s;
+    char *cmdtext, *idstring;
     int c;
 
     MSG_BeginReading();
@@ -846,12 +823,10 @@ CL_ConnectionlessPacket(void)
     }
     // remote command from gui front end
     if (c == A2C_CLIENT_COMMAND) {
-	char cmdtext[2048];
-
 	Con_Printf("client command\n");
 
-	if ((*(unsigned *)net_from.ip != *(unsigned *)net_local_adr.ip
-	     && *(unsigned *)net_from.ip != htonl(INADDR_LOOPBACK))) {
+	if (net_from.ip.l != net_local_adr.ip.l
+	    && net_from.ip.l != htonl(INADDR_LOOPBACK)) {
 	    Con_Printf("Command packet from remote host.  Ignored.\n");
 	    return;
 	}
@@ -859,49 +834,44 @@ CL_ConnectionlessPacket(void)
 	ShowWindow(mainwindow, SW_RESTORE);
 	SetForegroundWindow(mainwindow);
 #endif
-	s = MSG_ReadString();
+	cmdtext = MSG_ReadString();
+	idstring = MSG_ReadString();
 
-	strncpy(cmdtext, s, sizeof(cmdtext) - 1);
-	cmdtext[sizeof(cmdtext) - 1] = 0;
+	/* Strip leading and trailing spaces */
+	while (*idstring && isspace(*idstring))
+	    idstring++;
+	while (*idstring && isspace(idstring[strlen(idstring) - 1]))
+	    idstring[strlen(idstring) - 1] = 0;
 
-	s = MSG_ReadString();
-
-	while (*s && isspace(*s))
-	    s++;
-	while (*s && isspace(s[strlen(s) - 1]))
-	    s[strlen(s) - 1] = 0;
-
-	if (!allowremotecmd
-	    && (!*localid.string || strcmp(localid.string, s))) {
-	    if (!*localid.string) {
-		Con_Printf("===========================\n");
-		Con_Printf("Command packet received from local host, but no "
-			   "localid has been set.  You may need to upgrade your server "
-			   "browser.\n");
-		Con_Printf("===========================\n");
-		return;
-	    }
-	    Con_Printf("===========================\n");
-	    Con_Printf
-		("Invalid localid on command packet received from local host. "
-		 "\n|%s| != |%s|\n"
-		 "You may need to reload your server browser and QuakeWorld.\n",
-		 s, localid.string);
-	    Con_Printf("===========================\n");
+	if (!allowremotecmd && !*localid.string) {
+	    Con_Printf("===========================\n"
+		       "Command packet received from local host, but no "
+		       "localid has been set.  You may need to upgrade your "
+		       "server browser.\n"
+		       "===========================\n");
+	    return;
+	}
+	if (!allowremotecmd && strcmp(localid.string, idstring)) {
+	    Con_Printf("===========================\n"
+		       "Invalid localid on command packet received from local "
+		       "host.\n"
+		       " |%s| != |%s|\n"
+		       "You may need to reload your server browser and "
+		       "QuakeWorld.\n"
+		       "===========================\n",
+		       idstring, localid.string);
 	    Cvar_Set("localid", "");
 	    return;
 	}
 
-	Cbuf_AddText(cmdtext);
+	Cbuf_AddText("%s", cmdtext);
 	allowremotecmd = false;
 	return;
     }
     // print command from somewhere
     if (c == A2C_PRINT) {
 	Con_Printf("print\n");
-
-	s = MSG_ReadString();
-	Con_Print(s);
+	Con_Print(MSG_ReadString());
 	return;
     }
     // ping from somewhere
@@ -923,16 +893,13 @@ CL_ConnectionlessPacket(void)
 
     if (c == S2C_CHALLENGE) {
 	Con_Printf("challenge\n");
-
-	s = MSG_ReadString();
-	cls.challenge = atoi(s);
+	cls.challenge = atoi(MSG_ReadString());
 	CL_SendConnectPacket();
 	return;
     }
 #if 0
     if (c == svc_disconnect) {
 	Con_Printf("disconnect\n");
-
 	Host_EndGame("Server disconnected");
     }
 #endif
@@ -946,15 +913,12 @@ CL_ConnectionlessPacket(void)
 CL_ReadPackets
 =================
 */
-void
+static void
 CL_ReadPackets(void)
 {
-//      while (NET_GetPacket ())
     while (CL_GetMessage()) {
-	//
-	// remote command packet
-	//
 	if (*(int *)net_message.data == -1) {
+	    /* remote command packet */
 	    CL_ConnectionlessPacket();
 	    continue;
 	}
@@ -963,9 +927,8 @@ CL_ReadPackets(void)
 	    Con_Printf("%s: Runt packet\n", NET_AdrToString(net_from));
 	    continue;
 	}
-	//
-	// packet from server
-	//
+
+	/* packet from server */
 	if (!cls.demoplayback &&
 	    !NET_CompareAdr(net_from, cls.netchan.remote_address)) {
 	    Con_DPrintf("%s:sequenced packet without connection\n",
@@ -973,23 +936,17 @@ CL_ReadPackets(void)
 	    continue;
 	}
 	if (!Netchan_Process(&cls.netchan))
-	    continue;		// wasn't accepted for some reason
-	CL_ParseServerMessage();
+	    continue;		/* wasn't accepted for some reason */
 
-//              if (cls.demoplayback && cls.state >= ca_active && !CL_DemoBehind())
-//                      return;
+	CL_ParseServerMessage();
     }
 
-    //
-    // check timeout
-    //
+    /* check timeout */
     if (cls.state >= ca_connected
 	&& realtime - cls.netchan.last_received > cl_timeout.value) {
 	Con_Printf("\nServer connection timed out.\n");
 	CL_Disconnect();
-	return;
     }
-
 }
 
 //=============================================================================
@@ -1032,7 +989,7 @@ CL_Download_f(void)
     cls.downloadtype = dl_single;
 
     MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-    SZ_Print(&cls.netchan.message, va("download %s\n", Cmd_Argv(1)));
+    MSG_WriteStringf(&cls.netchan.message, "download %s\n", Cmd_Argv(1));
 }
 
 /* FIXME - more hacks... */
@@ -1046,13 +1003,25 @@ CL_Minimize_f
 void
 CL_Windows_f(void)
 {
-//      if (modestate == MS_WINDOWED)
-//              ShowWindow(mainwindow, SW_MINIMIZE);
-//      else
     SendMessage(mainwindow, WM_SYSKEYUP, VK_TAB, 1 | (0x0F << 16) | (1 << 29));
-    /* count = 1 | scancode = 0x0F = TAB | Alt was down when tab released... */
 }
 #endif
+
+static struct stree_root *
+CL_Skin_Arg_f(const char *arg)
+{
+    struct stree_root *root;
+
+    root = Z_Malloc(sizeof(struct stree_root));
+    if (root) {
+	*root = STREE_ROOT;
+	STree_AllocInit();
+	COM_ScanDir(root, "skins", arg, ".pcx", true);
+    }
+
+    return root;
+}
+
 
 /*
 =================
@@ -1078,7 +1047,6 @@ CL_Init(void)
     CL_InitTEnts();
     CL_InitPrediction();
     CL_InitCam();
-    Pmove_Init();
 
 //
 // register our commands
@@ -1093,6 +1061,7 @@ CL_Init(void)
     Cvar_RegisterVariable(&cl_yawspeed);
     Cvar_RegisterVariable(&cl_pitchspeed);
     Cvar_RegisterVariable(&cl_anglespeedkey);
+    Cvar_RegisterVariable(&cl_run);
     Cvar_RegisterVariable(&cl_shownet);
     Cvar_RegisterVariable(&cl_sbar);
     Cvar_RegisterVariable(&cl_hudswap);
@@ -1106,6 +1075,8 @@ CL_Init(void)
     Cvar_RegisterVariable(&m_yaw);
     Cvar_RegisterVariable(&m_forward);
     Cvar_RegisterVariable(&m_side);
+
+    Cvar_RegisterVariable(&m_freelook);
 
     Cvar_RegisterVariable(&rcon_password);
     Cvar_RegisterVariable(&rcon_address);
@@ -1274,10 +1245,6 @@ Host_WriteConfiguration(void)
 	Key_WriteBindings(f);
 	Cvar_WriteVariables(f);
 
-	/* Save the mlook state (rarely used as an actual key binding) */
-	if (in_mlook.state & 1)
-	    fprintf(f, "+mlook\n");
-
 	fclose(f);
     }
 }
@@ -1320,7 +1287,6 @@ Host_Frame
 Runs all active servers
 ==================
 */
-int nopacketcount;
 void
 Host_Frame(float time)
 {
@@ -1329,14 +1295,14 @@ Host_Frame(float time)
     static double time3 = 0;
     int pass1, pass2, pass3;
     float fps;
+    physent_stack_t pestack;
 
+    /* something bad happened, or the server disconnected */
     if (setjmp(host_abort))
-	return;		// something bad happened, or the server disconnected
+	return;
 
     // decide the simulation time
     realtime += time;
-    if (oldrealtime > realtime)
-	oldrealtime = 0;
 
     if (cl_maxfps.value)
 	fps = qmax(30.0f, qmin(cl_maxfps.value, 72.0f));
@@ -1354,33 +1320,36 @@ Host_Frame(float time)
     // get new key events
     Sys_SendKeyEvents();
 
-    // allow mice or other external controllers to add commands
+    /* allow mice or other external controllers to add commands */
     IN_Commands();
 
-    // process console commands
+    /* process console commands */
     Cbuf_Execute();
 
     // fetch results from server
     CL_ReadPackets();
+
+    /* Set the pmove physents based on current state... */
+    CL_SetSolidEntities(&pestack);
 
     // send intentions now
     // resend a connection request if necessary
     if (cls.state == ca_disconnected) {
 	CL_CheckForResend();
     } else
-	CL_SendCmd();
+	CL_SendCmd(&pestack);
 
     // Set up prediction for other players
-    CL_SetUpPlayerPrediction(false);
+    CL_SetUpPlayerPrediction(&pestack, false);
 
     // do client side motion prediction
-    CL_PredictMove();
+    CL_PredictMove(&pestack);
 
     // Set up prediction for other players
-    CL_SetUpPlayerPrediction(true);
+    CL_SetUpPlayerPrediction(&pestack, true);
 
     // build a refresh entity list
-    CL_EmitEntities();
+    CL_EmitEntities(&pestack);
 
     // update video
     if (host_speeds.value)
@@ -1392,7 +1361,7 @@ Host_Frame(float time)
     if (host_speeds.value)
 	time2 = Sys_DoubleTime();
 
-    // update audio
+    /* update audio */
     if (cls.state == ca_active) {
 	S_Update(r_origin, vpn, vright, vup);
 	CL_DecayLights();
@@ -1412,23 +1381,6 @@ Host_Frame(float time)
 
     host_framecount++;
     fps_count++;
-}
-
-static void
-simple_crypt(char *buf, int len)
-{
-    while (len--)
-	*buf++ ^= 0xff;
-}
-
-void
-Host_FixupModelNames(void)
-{
-    simple_crypt(emodel_name, sizeof(emodel_name) - 1);
-    simple_crypt(pmodel_name, sizeof(pmodel_name) - 1);
-    simple_crypt(prespawn_name, sizeof(prespawn_name) - 1);
-    simple_crypt(modellist_name, sizeof(modellist_name) - 1);
-    simple_crypt(soundlist_name, sizeof(soundlist_name) - 1);
 }
 
 //============================================================================
@@ -1464,26 +1416,24 @@ Host_Init(quakeparms_t *parms)
 
     COM_Init();
 
-    Host_FixupModelNames();
-
     NET_Init(PORT_CLIENT);
     Netchan_Init();
 
-    W_LoadWadFile("gfx.wad");
+    W_LoadWadFile(&host_gfx, "gfx.wad");
     Key_Init();
     Con_Init();
     M_Init();
-    Mod_Init();
+    Mod_Init(R_ModelLoader());
 
 //      Con_Printf ("Exe: "__TIME__" "__DATE__"\n");
     Con_Printf("%4.1f megs RAM used.\n", parms->memsize / (1024 * 1024.0));
 
     R_InitTextures();
 
-    host_basepal = (byte *)COM_LoadHunkFile("gfx/palette.lmp");
+    host_basepal = COM_LoadHunkFile("gfx/palette.lmp");
     if (!host_basepal)
 	Sys_Error("Couldn't load gfx/palette.lmp");
-    host_colormap = (byte *)COM_LoadHunkFile("gfx/colormap.lmp");
+    host_colormap = COM_LoadHunkFile("gfx/colormap.lmp");
     if (!host_colormap)
 	Sys_Error("Couldn't load gfx/colormap.lmp");
 
@@ -1499,20 +1449,25 @@ Host_Init(quakeparms_t *parms)
     CDAudio_Init();
     CL_Init();
     IN_Init();
+    Mod_InitAliasCache();
 
     Hunk_AllocName(0, "-HOST_HUNKLEVEL-");
     host_hunklevel = Hunk_LowMark();
 
-    Cbuf_InsertText("exec quake.rc\n");
-    Cbuf_Execute();
-    Cbuf_AddText
-	("echo Type connect <internet address> or use GameSpy to connect to a game.\n");
-    Cbuf_AddText("cl_warncmd 1\n");
-
     host_initialized = true;
-
     Con_Printf("\nClient Version TyrQuake-%s\n\n", stringify(TYR_VERSION));
-    Con_Printf("ÄÅÅÅÅÅÅ QuakeWorld Initialized ÅÅÅÅÅÅÇ\n");
+    Con_Printf("\200\201\201\201\201\201\201 QuakeWorld Initialized "
+	       "\201\201\201\201\201\201\202\n");
+
+    /* In case exec of quake.rc fails */
+    if (!setjmp(host_abort)) {
+	Cbuf_InsertText("exec quake.rc\n");
+	Cbuf_Execute();
+    }
+
+    Cbuf_AddText("echo Type connect <internet address> or use GameSpy to "
+		 "connect to a game.\n");
+    Cbuf_AddText("cl_warncmd 1\n");
 }
 
 

@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "client.h"
 #include "cmd.h"
 #include "console.h"
+#include "model.h"
 #include "pmove.h"
 #include "quakedef.h"
 #include "sbar.h"
@@ -31,13 +32,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifdef GLQUAKE
 #include "glquake.h"
-#include "gl_model.h"
 #else
-#include "model.h"
 #include "d_iface.h"
 #endif
 
-static char *svc_strings[] = {
+static const char *svc_strings[] = {
     "svc_bad",
     "svc_nop",
     "svc_disconnect",
@@ -172,6 +171,7 @@ qboolean
 CL_CheckOrDownloadFile(char *filename)
 {
     FILE *f;
+    int err;
 
     if (strstr(filename, "..")) {
 	Con_Printf("Refusing to download a path with ..\n");
@@ -183,28 +183,32 @@ CL_CheckOrDownloadFile(char *filename)
 	fclose(f);
 	return true;
     }
-    //ZOID - can't download when recording
+    /* can't download when recording */
     if (cls.demorecording) {
 	Con_Printf("Unable to download %s in record mode.\n",
 		   cls.downloadname);
 	return true;
     }
-    //ZOID - can't download when playback
+    /* can't download when playback */
     if (cls.demoplayback)
 	return true;
 
-    strcpy(cls.downloadname, filename);
+    snprintf(cls.downloadname, sizeof(cls.downloadname), "%s", filename);
     Con_Printf("Downloading %s...\n", cls.downloadname);
 
-    // download to a temp name, and only rename
-    // to the real name when done, so if interrupted
-    // a runt file wont be left
-    COM_StripExtension(cls.downloadname, cls.downloadtempname);
-    strcat(cls.downloadtempname, ".tmp");
+    /*
+     * download to a temp name, and only rename to the real name when
+     * done, so if interrupted a runt file wont be left
+     */
+    err = COM_DefaultExtension(cls.downloadname, ".tmp", cls.downloadtempname,
+			       sizeof(cls.downloadtempname));
+    if (err) {
+	Con_Printf("Refusing download, pathname too long\n");
+	return true;
+    }
 
     MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-    MSG_WriteString(&cls.netchan.message,
-		    va("download %s", cls.downloadname));
+    MSG_WriteStringf(&cls.netchan.message, "download %s", cls.downloadname);
 
     cls.downloadnumber++;
 
@@ -256,16 +260,14 @@ Model_NextDownload(void)
     }
 
     // all done
-    cl.worldmodel = cl.model_precache[1];
+    cl.worldmodel = BrushModel(cl.model_precache[1]);
     R_NewMap();
     Hunk_Check();		// make sure nothing is hurt
 
     // done with modellist, request first of static signon messages
     MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-//      MSG_WriteString (&cls.netchan.message, va("prespawn %i 0 %i", cl.servercount, cl.worldmodel->checksum2));
-    MSG_WriteString(&cls.netchan.message,
-		    va(prespawn_name, cl.servercount,
-		       cl.worldmodel->checksum2));
+    MSG_WriteStringf(&cls.netchan.message, "prespawn %i 0 %i",
+		     cl.servercount, cl.worldmodel->checksum2);
 }
 
 /*
@@ -303,9 +305,7 @@ Sound_NextDownload(void)
     cl_spikeindex = -1;
     cl_flagindex = -1;
     MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-//      MSG_WriteString (&cls.netchan.message, va("modellist %i 0", cl.servercount));
-    MSG_WriteString(&cls.netchan.message,
-		    va(modellist_name, cl.servercount, 0));
+    MSG_WriteStringf(&cls.netchan.message, "modellist %i 0", cl.servercount);
 }
 
 
@@ -404,7 +404,7 @@ CL_ParseDownload(void)
 	cls.downloadpercent = percent;
 
 	MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-	SZ_Print(&cls.netchan.message, "nextdl");
+	MSG_WriteString(&cls.netchan.message, "nextdl");
     } else {
 	char oldn[MAX_OSPATH];
 	char newn[MAX_OSPATH];
@@ -571,7 +571,7 @@ CL_ParseServerData(void)
     //ZOID--run the autoexec.cfg in the gamedir
     //if it exists
     if (cflag) {
-	sprintf(fn, "%s/%s", com_gamedir, "config.cfg");
+	snprintf(fn, sizeof(fn), "%s/%s", com_gamedir, "config.cfg");
 	if ((f = fopen(fn, "r")) != NULL) {
 	    fclose(f);
 	    Cbuf_AddText("cl_warncmd 0\n");
@@ -588,7 +588,7 @@ CL_ParseServerData(void)
     }
     // get the full level name
     str = MSG_ReadString();
-    strncpy(cl.levelname, str, sizeof(cl.levelname) - 1);
+    snprintf(cl.levelname, sizeof(cl.levelname), "%s", str);
 
     // get the movevars
     movevars.gravity = MSG_ReadFloat();
@@ -603,16 +603,14 @@ CL_ParseServerData(void)
     movevars.entgravity = MSG_ReadFloat();
 
     // seperate the printfs so the server message can have a color
-    Con_Printf
-	("\n\n\35\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\37\n\n");
+    Con_Printf("\n\n\35\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36"
+	       "\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\36\37\n\n");
     Con_Printf("%c%s\n", 2, str);
 
     // ask for the sound list next
     memset(cl.sound_name, 0, sizeof(cl.sound_name));
     MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-//      MSG_WriteString (&cls.netchan.message, va("soundlist %i 0", cl.servercount));
-    MSG_WriteString(&cls.netchan.message,
-		    va(soundlist_name, cl.servercount, 0));
+    MSG_WriteStringf(&cls.netchan.message, "soundlist %i 0", cl.servercount);
 
     // now waiting for downloads, etc
     cls.state = ca_onserver;
@@ -626,15 +624,14 @@ CL_ParseSoundlist
 static void
 CL_ParseSoundlist(void)
 {
+    const int NAMELEN = sizeof(cl.sound_name[0]);
+
+    char *str, *name;
     int numsounds;
-    char *str;
     int n;
 
 // precache sounds
-//      memset (cl.sound_precache, 0, sizeof(cl.sound_precache));
-
     numsounds = MSG_ReadByte();
-
     for (;;) {
 	str = MSG_ReadString();
 	if (!str[0])
@@ -642,16 +639,15 @@ CL_ParseSoundlist(void)
 	numsounds++;
 	if (numsounds == MAX_SOUNDS)
 	    Host_EndGame("Server sent too many sound_precache");
-	strcpy(cl.sound_name[numsounds], str);
+	name = cl.sound_name[numsounds];
+	snprintf(name, NAMELEN, "%s", str);
     }
 
     n = MSG_ReadByte();
-
     if (n) {
 	MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-//              MSG_WriteString (&cls.netchan.message, va("soundlist %i %i", cl.servercount, n));
-	MSG_WriteString(&cls.netchan.message,
-			va(soundlist_name, cl.servercount, n));
+	MSG_WriteStringf(&cls.netchan.message, "soundlist %i %i",
+			 cl.servercount, n);
 	return;
     }
 
@@ -668,8 +664,9 @@ CL_ParseModellist
 static void
 CL_ParseModellist(void)
 {
+    const int NAMELEN = sizeof(cl.model_name[0]);
     int nummodels;
-    char *str;
+    char *str, *name;
     int n;
 
 // precache models and note certain default indexes
@@ -682,13 +679,14 @@ CL_ParseModellist(void)
 	nummodels++;
 	if (nummodels == MAX_MODELS)
 	    Host_EndGame("Server sent too many model_precache");
-	strcpy(cl.model_name[nummodels], str);
+	name = cl.model_name[nummodels];
+	snprintf(name, NAMELEN, "%s", str);
 
-	if (!strcmp(cl.model_name[nummodels], "progs/spike.mdl"))
+	if (!strcmp(name, "progs/spike.mdl"))
 	    cl_spikeindex = nummodels;
-	if (!strcmp(cl.model_name[nummodels], "progs/player.mdl"))
+	if (!strcmp(name, "progs/player.mdl"))
 	    cl_playerindex = nummodels;
-	if (!strcmp(cl.model_name[nummodels], "progs/flag.mdl"))
+	if (!strcmp(name, "progs/flag.mdl"))
 	    cl_flagindex = nummodels;
     }
 
@@ -696,9 +694,8 @@ CL_ParseModellist(void)
 
     if (n) {
 	MSG_WriteByte(&cls.netchan.message, clc_stringcmd);
-//              MSG_WriteString (&cls.netchan.message, va("modellist %i %i", cl.servercount, n));
-	MSG_WriteString(&cls.netchan.message,
-			va(modellist_name, cl.servercount, n));
+	MSG_WriteStringf(&cls.netchan.message, "modellist %i %i",
+			 cl.servercount, n);
 	return;
     }
 
@@ -892,21 +889,22 @@ CL_NewTranslation(int slot)
 
     R_TranslatePlayerSkin(slot);
 #else
-
     int i, j;
     int top, bottom;
     byte *dest, *source;
     player_info_t *player;
-    char s[512];
+    const char *skin_key;
+    char skin[MAX_QPATH];
 
     if (slot > MAX_CLIENTS)
 	Sys_Error("%s: slot > MAX_CLIENTS", __func__);
 
     player = &cl.players[slot];
 
-    strcpy(s, Info_ValueForKey(player->userinfo, "skin"));
-    COM_StripExtension(s, s);
-    if (player->skin && !strcasecmp(s, player->skin->name))
+    skin_key = Info_ValueForKey(player->userinfo, "skin");
+    COM_StripExtension(skin_key, skin, sizeof(skin));
+
+    if (player->skin && !strcasecmp(skin, player->skin->name))
 	player->skin = NULL;
 
     if (player->_topcolor != player->topcolor ||
@@ -927,7 +925,8 @@ CL_NewTranslation(int slot)
 	bottom *= 16;
 
 	for (i = 0; i < VID_GRADES; i++, dest += 256, source += 256) {
-	    if (top < 128)	// the artists made some backwards ranges.  sigh.
+	    /* the artists made some backwards ranges.  sigh. */
+	    if (top < 128)
 		memcpy(dest + TOP_RANGE, source + top, 16);
 	    else
 		for (j = 0; j < 16; j++)
@@ -951,8 +950,11 @@ CL_ProcessUserinfo
 static void
 CL_ProcessUserInfo(int slot, player_info_t * player)
 {
-    strncpy(player->name, Info_ValueForKey(player->userinfo, "name"),
-	    sizeof(player->name) - 1);
+    char *name;
+
+    name = Info_ValueForKey(player->userinfo, "name");
+    snprintf(player->name, sizeof(player->name), "%s", name);
+
     player->topcolor = atoi(Info_ValueForKey(player->userinfo, "topcolor"));
     player->bottomcolor =
 	atoi(Info_ValueForKey(player->userinfo, "bottomcolor"));
@@ -976,8 +978,9 @@ CL_UpdateUserinfo
 static void
 CL_UpdateUserinfo(void)
 {
-    int slot;
     player_info_t *player;
+    char *info;
+    int slot;
 
     slot = MSG_ReadByte();
     if (slot >= MAX_CLIENTS)
@@ -985,8 +988,9 @@ CL_UpdateUserinfo(void)
 
     player = &cl.players[slot];
     player->userid = MSG_ReadLong();
-    strncpy(player->userinfo, MSG_ReadString(), sizeof(player->userinfo) - 1);
 
+    info = MSG_ReadString();
+    snprintf(player->userinfo, sizeof(player->userinfo), "%s", info);
     CL_ProcessUserInfo(slot, player);
 }
 
@@ -998,21 +1002,18 @@ CL_SetInfo
 static void
 CL_SetInfo(void)
 {
-    int slot;
-    player_info_t *player;
     char key[MAX_MSGLEN];
     char value[MAX_MSGLEN];
+    player_info_t *player;
+    int slot;
 
     slot = MSG_ReadByte();
     if (slot >= MAX_CLIENTS)
 	Host_EndGame("%s: svc_setinfo > MAX_SCOREBOARD", __func__);
 
     player = &cl.players[slot];
-
-    strncpy(key, MSG_ReadString(), sizeof(key) - 1);
-    key[sizeof(key) - 1] = 0;
-    strncpy(value, MSG_ReadString(), sizeof(value) - 1);
-    key[sizeof(value) - 1] = 0;
+    snprintf(key, sizeof(key), "%s", MSG_ReadString());
+    snprintf(value, sizeof(value), "%s", MSG_ReadString());
 
     Con_DPrintf("SETINFO %s: %s=%s\n", player->name, key, value);
 
@@ -1032,10 +1033,8 @@ CL_ServerInfo(void)
     char key[MAX_MSGLEN];
     char value[MAX_MSGLEN];
 
-    strncpy(key, MSG_ReadString(), sizeof(key) - 1);
-    key[sizeof(key) - 1] = 0;
-    strncpy(value, MSG_ReadString(), sizeof(value) - 1);
-    key[sizeof(value) - 1] = 0;
+    snprintf(key, sizeof(key), "%s", MSG_ReadString());
+    snprintf(value, sizeof(value), "%s", MSG_ReadString());
 
     Con_DPrintf("SERVERINFO: %s=%s\n", key, value);
 
@@ -1116,7 +1115,6 @@ CL_MuzzleFlash(void)
 CL_ParseServerMessage
 =====================
 */
-int received_framecount;
 void
 CL_ParseServerMessage(void)
 {
@@ -1124,7 +1122,6 @@ CL_ParseServerMessage(void)
     char *s;
     int i, j;
 
-    received_framecount = host_framecount;
     cl.last_servermessage = realtime;
     CL_ClearProjectiles();
 
@@ -1185,9 +1182,7 @@ CL_ParseServerMessage(void)
 	    break;
 
 	case svc_stufftext:
-	    s = MSG_ReadString();
-	    Con_DPrintf("stufftext: %s\n", s);
-	    Cbuf_AddText(s);
+	    Cbuf_AddText("%s", MSG_ReadString());
 	    break;
 
 	case svc_damage:
@@ -1210,7 +1205,8 @@ CL_ParseServerMessage(void)
 	    i = MSG_ReadByte();
 	    if (i >= MAX_LIGHTSTYLES)
 		Sys_Error("svc_lightstyle > MAX_LIGHTSTYLES");
-	    strcpy(cl_lightstyle[i].map, MSG_ReadString());
+	    s = MSG_ReadString();
+	    snprintf(cl_lightstyle[i].map, MAX_STYLESTRING, "%s", s);
 	    cl_lightstyle[i].length = strlen(cl_lightstyle[i].map);
 	    break;
 
@@ -1393,6 +1389,4 @@ CL_ParseServerMessage(void)
 	    Host_EndGame("%s: Illegible server message", __func__);
 	}
     }
-
-    CL_SetSolidEntities();
 }

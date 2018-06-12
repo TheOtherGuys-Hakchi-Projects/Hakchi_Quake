@@ -28,6 +28,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #endif
 
 #include "client.h"
+#include "model.h"
 #include "r_shared.h"
 
 #define ALIAS_BASE_SIZE_RATIO	(1.0 / 11.0)
@@ -86,8 +87,7 @@ extern cvar_t r_numedges;
 
 // !!! if this is changed, it must be changed in asm_draw.h too !!!
 typedef struct clipplane_s {
-    vec3_t normal;
-    float dist;
+    mplane_t plane;
     struct clipplane_s *next;
     byte leftedge;
     byte rightedge;
@@ -109,18 +109,13 @@ extern int r_visframecount;
 
 //=============================================================================
 
-void R_ClearPolyList(void);
-void R_DrawPolyList(void);
-
 //
 // current entity info
 //
-extern qboolean insubmodel;
 
-void R_DrawSprite(void);
-void R_RenderFace(msurface_t *fa, int clipflags);
-void R_RenderPoly(msurface_t *fa, int clipflags);
-void R_RenderBmodelFace(bedge_t *pedges, msurface_t *psurf);
+void R_DrawSprite(const entity_t *e);
+void R_RenderFace(const entity_t *e, msurface_t *fa, int clipflags);
+void R_RenderBmodelFace(const entity_t *e, bedge_t *pedges, msurface_t *psurf);
 void R_TransformPlane(mplane_t *p, float *normal, float *dist);
 void R_TransformFrustum(void);
 void R_SetSkyFrame(void);
@@ -140,12 +135,12 @@ void R_GenSkyTile(void *pdest);
 void R_GenSkyTile16(void *pdest);
 void R_Surf8Patch(void);
 void R_Surf16Patch(void);
-void R_DrawSubmodelPolygons(model_t *pmodel, int clipflags);
-void R_DrawSolidClippedSubmodelPolygons(model_t *pmodel);
+void R_DrawSubmodelPolygons(const entity_t *entity, int clipflags);
+void R_DrawSolidClippedSubmodelPolygons(const entity_t *entity);
 
 void R_AddPolygonEdges(emitpoint_t *pverts, int numverts, int miplevel);
 surf_t *R_GetSurf(void);
-void R_AliasDrawModel(alight_t *plighting);
+void R_AliasDrawModel(entity_t *e, alight_t *plighting);
 void R_BeginEdgeFrame(void);
 void R_ScanEdges(void);
 void R_InsertNewEdges(edge_t *edgestoadd, edge_t *edgelist);
@@ -159,11 +154,10 @@ extern void R_Surf16End(void);
 extern void R_EdgeCodeStart(void);
 extern void R_EdgeCodeEnd(void);
 
-extern void R_RotateBmodel(void);
+extern void R_RotateBmodel(const entity_t *e);
 
 extern int c_faceclip;
 extern int r_polycount;
-extern int *pfrustum_indexes[4];
 
 // !!! if this is changed, it must be changed in asm_draw.h too !!!
 #define	NEAR_CLIP	0.01
@@ -182,18 +176,6 @@ extern vec3_t sbaseaxis[3], tbaseaxis[3];
 extern int r_currentkey;
 extern int r_currentbkey;
 
-typedef struct btofpoly_s {
-    int clipflags;
-    msurface_t *psurf;
-} btofpoly_t;
-
-#define MAX_BTOFPOLYS	5000	// FIXME: tune this
-
-extern int numbtofpolys;
-extern btofpoly_t *pbtofpolys;
-
-void R_ZDrawSubmodelPolys(model_t *clmodel);
-
 //=========================================================
 // Alias models
 //=========================================================
@@ -203,17 +185,12 @@ void R_ZDrawSubmodelPolys(model_t *clmodel);
 
 extern int numverts;
 extern int a_skinwidth;
-extern mtriangle_t *ptriangles;
 extern int numtriangles;
-extern aliashdr_t *paliashdr;
-extern mdl_t *pmdl;
 extern float leftclip, topclip, rightclip, bottomclip;
 extern int r_acliptype;
-extern finalvert_t *pfinalverts;
-extern auxvert_t *pauxverts;
 extern float r_avertexnormals[][3];
 
-qboolean R_AliasCheckBBox(void);
+qboolean R_AliasCheckBBox(entity_t *e);
 
 //=========================================================
 // turbulence stuff
@@ -246,23 +223,24 @@ extern edge_t edge_head;
 extern edge_t edge_tail;
 extern edge_t edge_aftertail;
 extern int r_bmodelactive;
-extern vrect_t *pconupdate;
 
 extern float aliasxscale, aliasyscale, aliasxcenter, aliasycenter;
 extern float r_aliastransition, r_resfudge;
 
 extern int r_outofsurfaces;
 extern int r_outofedges;
-
-extern mvertex_t *r_pcurrentvertbase;
 extern int r_maxvalidedgeoffset;
 
-void R_AliasClipTriangle(mtriangle_t *ptri);
+void R_AliasClipTriangle(mtriangle_t *ptri, finalvert_t *pfinalverts, auxvert_t *pauxverts);
+void R_AliasProjectFinalVert(finalvert_t *fv, auxvert_t *av);
+void R_Alias_clip_top(finalvert_t *pfv0, finalvert_t *pfv1, finalvert_t *out);
+void R_Alias_clip_bottom(finalvert_t *pfv0, finalvert_t *pfv1, finalvert_t *out);
+void R_Alias_clip_left(finalvert_t *pfv0, finalvert_t *pfv1, finalvert_t *out);
+void R_Alias_clip_right(finalvert_t *pfv0, finalvert_t *pfv1, finalvert_t *out);
 
 extern float r_time1;
 extern float dp_time1, dp_time2, db_time1, db_time2, rw_time1, rw_time2;
 extern float se_time1, se_time2, de_time1, de_time2, dv_time1, dv_time2;
-extern int r_frustum_indexes[4 * 6];
 extern int r_maxsurfsseen, r_maxedgesseen;
 extern cshift_t cshift_water;
 extern qboolean r_dowarpold, r_viewchanged;
@@ -281,7 +259,7 @@ void R_PrintAliasStats(void);
 void R_PrintTimes(void);
 void R_PrintDSpeeds(void);
 void R_AnimateLight(void);
-int R_LightPoint(vec3_t p);
+int R_LightPoint(const vec3_t point);
 void R_SetupFrame(void);
 void R_cshift_f(void);
 void R_EmitEdge(mvertex_t *pv0, mvertex_t *pv1);

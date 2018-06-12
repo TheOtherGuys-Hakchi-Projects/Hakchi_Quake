@@ -22,18 +22,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <math.h>
 
 #include "mathlib.h"
+#include "model.h"
 #include "sys.h"
 
 #ifdef SERVERONLY
 #include "qwsvdef.h"
 #else
 #include "quakedef.h"
-#endif
-
-#ifdef GLQUAKE
-#include "gl_model.h"
-#else
-#include "model.h"
 #endif
 
 vec3_t vec3_origin = { 0, 0, 0 };
@@ -171,6 +166,20 @@ anglemod(float a)
     return a;
 }
 
+int
+SignbitsForPlane(const mplane_t *plane)
+{
+    int i, bits;
+
+    // for fast box on planeside test
+    bits = 0;
+    for (i = 0; i < 3; i++) {
+	if (plane->normal[i] < 0)
+	    bits |= 1 << i;
+    }
+    return bits;
+}
+
 /*
 ==================
 BOPS_Error
@@ -190,11 +199,11 @@ BOPS_Error(void)
 ==================
 BoxOnPlaneSide
 
-Returns 1, 2, or 1 + 2
+Returns PSIDE_FRONT, PSIDE_BACK, or PSIDE_BOTH (PSIDE_FRONT | PSIDE_BACK)
 ==================
 */
 int
-BoxOnPlaneSide(vec3_t emins, vec3_t emaxs, mplane_t *p)
+BoxOnPlaneSide(const vec3_t mins, const vec3_t maxs, const mplane_t *p)
 {
     float dist1, dist2;
     int sides;
@@ -203,11 +212,11 @@ BoxOnPlaneSide(vec3_t emins, vec3_t emaxs, mplane_t *p)
     // this is done by the BOX_ON_PLANE_SIDE macro before calling this function
     // fast axial cases
     if (p->type < 3) {
-	if (p->dist <= emins[p->type])
-	    return 1;
-	if (p->dist >= emaxs[p->type])
-	    return 2;
-	return 3;
+	if (p->dist <= mins[p->type])
+	    return PSIDE_FRONT;
+	if (p->dist >= maxs[p->type])
+	    return PSIDE_BACK;
+	return PSIDE_BOTH;
     }
 #endif
 
@@ -215,102 +224,78 @@ BoxOnPlaneSide(vec3_t emins, vec3_t emaxs, mplane_t *p)
     switch (p->signbits) {
     case 0:
 	dist1 =
-	    p->normal[0] * emaxs[0] + p->normal[1] * emaxs[1] +
-	    p->normal[2] * emaxs[2];
+	    p->normal[0] * maxs[0] + p->normal[1] * maxs[1] +
+	    p->normal[2] * maxs[2];
 	dist2 =
-	    p->normal[0] * emins[0] + p->normal[1] * emins[1] +
-	    p->normal[2] * emins[2];
+	    p->normal[0] * mins[0] + p->normal[1] * mins[1] +
+	    p->normal[2] * mins[2];
 	break;
     case 1:
 	dist1 =
-	    p->normal[0] * emins[0] + p->normal[1] * emaxs[1] +
-	    p->normal[2] * emaxs[2];
+	    p->normal[0] * mins[0] + p->normal[1] * maxs[1] +
+	    p->normal[2] * maxs[2];
 	dist2 =
-	    p->normal[0] * emaxs[0] + p->normal[1] * emins[1] +
-	    p->normal[2] * emins[2];
+	    p->normal[0] * maxs[0] + p->normal[1] * mins[1] +
+	    p->normal[2] * mins[2];
 	break;
     case 2:
 	dist1 =
-	    p->normal[0] * emaxs[0] + p->normal[1] * emins[1] +
-	    p->normal[2] * emaxs[2];
+	    p->normal[0] * maxs[0] + p->normal[1] * mins[1] +
+	    p->normal[2] * maxs[2];
 	dist2 =
-	    p->normal[0] * emins[0] + p->normal[1] * emaxs[1] +
-	    p->normal[2] * emins[2];
+	    p->normal[0] * mins[0] + p->normal[1] * maxs[1] +
+	    p->normal[2] * mins[2];
 	break;
     case 3:
 	dist1 =
-	    p->normal[0] * emins[0] + p->normal[1] * emins[1] +
-	    p->normal[2] * emaxs[2];
+	    p->normal[0] * mins[0] + p->normal[1] * mins[1] +
+	    p->normal[2] * maxs[2];
 	dist2 =
-	    p->normal[0] * emaxs[0] + p->normal[1] * emaxs[1] +
-	    p->normal[2] * emins[2];
+	    p->normal[0] * maxs[0] + p->normal[1] * maxs[1] +
+	    p->normal[2] * mins[2];
 	break;
     case 4:
 	dist1 =
-	    p->normal[0] * emaxs[0] + p->normal[1] * emaxs[1] +
-	    p->normal[2] * emins[2];
+	    p->normal[0] * maxs[0] + p->normal[1] * maxs[1] +
+	    p->normal[2] * mins[2];
 	dist2 =
-	    p->normal[0] * emins[0] + p->normal[1] * emins[1] +
-	    p->normal[2] * emaxs[2];
+	    p->normal[0] * mins[0] + p->normal[1] * mins[1] +
+	    p->normal[2] * maxs[2];
 	break;
     case 5:
 	dist1 =
-	    p->normal[0] * emins[0] + p->normal[1] * emaxs[1] +
-	    p->normal[2] * emins[2];
+	    p->normal[0] * mins[0] + p->normal[1] * maxs[1] +
+	    p->normal[2] * mins[2];
 	dist2 =
-	    p->normal[0] * emaxs[0] + p->normal[1] * emins[1] +
-	    p->normal[2] * emaxs[2];
+	    p->normal[0] * maxs[0] + p->normal[1] * mins[1] +
+	    p->normal[2] * maxs[2];
 	break;
     case 6:
 	dist1 =
-	    p->normal[0] * emaxs[0] + p->normal[1] * emins[1] +
-	    p->normal[2] * emins[2];
+	    p->normal[0] * maxs[0] + p->normal[1] * mins[1] +
+	    p->normal[2] * mins[2];
 	dist2 =
-	    p->normal[0] * emins[0] + p->normal[1] * emaxs[1] +
-	    p->normal[2] * emaxs[2];
+	    p->normal[0] * mins[0] + p->normal[1] * maxs[1] +
+	    p->normal[2] * maxs[2];
 	break;
     case 7:
 	dist1 =
-	    p->normal[0] * emins[0] + p->normal[1] * emins[1] +
-	    p->normal[2] * emins[2];
+	    p->normal[0] * mins[0] + p->normal[1] * mins[1] +
+	    p->normal[2] * mins[2];
 	dist2 =
-	    p->normal[0] * emaxs[0] + p->normal[1] * emaxs[1] +
-	    p->normal[2] * emaxs[2];
+	    p->normal[0] * maxs[0] + p->normal[1] * maxs[1] +
+	    p->normal[2] * maxs[2];
 	break;
     default:
-	dist1 = dist2 = 0;	// shut up compiler
 	BOPS_Error();
 	break;
     }
 
-#if 0
-    int i;
-    vec3_t corners[2];
-
-    for (i = 0; i < 3; i++) {
-	if (plane->normal[i] < 0) {
-	    corners[0][i] = emins[i];
-	    corners[1][i] = emaxs[i];
-	} else {
-	    corners[1][i] = emins[i];
-	    corners[0][i] = emaxs[i];
-	}
-    }
-    dist = DotProduct(plane->normal, corners[0]) - plane->dist;
-    dist2 = DotProduct(plane->normal, corners[1]) - plane->dist;
-    sides = 0;
-    if (dist1 >= 0)
-	sides = 1;
-    if (dist2 < 0)
-	sides |= 2;
-
-#endif
-
     sides = 0;
     if (dist1 >= p->dist)
-	sides = 1;
+	sides = PSIDE_FRONT;
     if (dist2 < p->dist)
-	sides |= 2;
+	sides |= PSIDE_BACK;
 
 #ifdef PARANOID
     if (sides == 0)
@@ -323,7 +308,7 @@ BoxOnPlaneSide(vec3_t emins, vec3_t emaxs, mplane_t *p)
 
 
 void
-AngleVectors(vec3_t angles, vec3_t forward, vec3_t right, vec3_t up)
+AngleVectors(const vec3_t angles, vec3_t forward, vec3_t right, vec3_t up)
 {
     float angle;
     float sr, sp, sy, cr, cp, cy;
@@ -459,7 +444,6 @@ VectorScale(const vec3_t in, const vec_t scale, vec3_t out)
     out[2] = in[2] * scale;
 }
 
-
 int
 Q_log2(int val)
 {
@@ -470,6 +454,26 @@ Q_log2(int val)
     return answer;
 }
 
+int
+Q_gcd(int a, int b)
+{
+    if (a < b) {
+	int tmp = a;
+	a = b;
+	b = tmp;
+    }
+    if (!b)
+	return a ? a : 1; /* just in case... */
+
+    while (a % b) {
+	int tmp = a;
+	a = b;
+	b = tmp;
+	b %= a;
+    }
+
+    return b;
+}
 
 /*
 ================

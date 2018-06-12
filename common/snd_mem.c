@@ -25,17 +25,24 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "sound.h"
 #include "sys.h"
 
-int cache_full_cycle;
+typedef struct {
+    int rate;
+    int width;
+    int channels;
+    int loopstart;
+    int samples;
+    int dataofs;		// chunk starts this many bytes from file start
+} wavinfo_t;
 
-byte *S_Alloc(int size);
+static wavinfo_t *GetWavinfo(const char *name, const byte *wav, int wavlength);
 
 /*
 ================
 ResampleSfx
 ================
 */
-void
-ResampleSfx(sfx_t *sfx, int inrate, int inwidth, byte *data)
+static void
+ResampleSfx(sfx_t *sfx, int inrate, int inwidth, const byte *data)
 {
     int outcount;
     int srcsample;
@@ -77,7 +84,7 @@ ResampleSfx(sfx_t *sfx, int inrate, int inwidth, byte *data)
 	    srcsample = samplefrac >> 8;
 	    samplefrac += fracstep;
 	    if (inwidth == 2)
-		sample = LittleShort(((short *)data)[srcsample]);
+		sample = LittleShort(((const short *)data)[srcsample]);
 	    else
 		sample = (int)((unsigned char)(data[srcsample]) - 128) << 8;
 	    if (sc->width == 2)
@@ -100,7 +107,7 @@ S_LoadSound(sfx_t *s)
 {
     char namebuffer[256];
     byte *data;
-    wavinfo_t info;
+    wavinfo_t *info;
     int len;
     float stepscale;
     sfxcache_t *sc;
@@ -126,27 +133,27 @@ S_LoadSound(sfx_t *s)
     }
 
     info = GetWavinfo(s->name, data, com_filesize);
-    if (info.channels != 1) {
+    if (info->channels != 1) {
 	Con_Printf("%s is a stereo sample\n", s->name);
 	return NULL;
     }
 
-    stepscale = (float)info.rate / shm->speed;
-    len = info.samples / stepscale;
+    stepscale = (float)info->rate / shm->speed;
+    len = info->samples / stepscale;
 
-    len = len * info.width * info.channels;
+    len = len * info->width * info->channels;
 
     sc = Cache_Alloc(&s->cache, len + sizeof(sfxcache_t), s->name);
     if (!sc)
 	return NULL;
 
-    sc->length = info.samples;
-    sc->loopstart = info.loopstart;
-    sc->speed = info.rate;
-    sc->width = info.width;
-    sc->stereo = info.channels;
+    sc->length = info->samples;
+    sc->loopstart = info->loopstart;
+    sc->speed = info->rate;
+    sc->width = info->width;
+    sc->stereo = info->channels;
 
-    ResampleSfx(s, sc->speed, sc->width, data + info.dataofs);
+    ResampleSfx(s, sc->speed, sc->width, data + info->dataofs);
 
     return sc;
 }
@@ -162,14 +169,14 @@ WAV loading
 */
 
 
-byte *data_p;
-byte *iff_end;
-byte *last_chunk;
-byte *iff_data;
-int iff_chunk_len;
+static const byte *data_p;
+static const byte *iff_end;
+static const byte *last_chunk;
+static const byte *iff_data;
+static int iff_chunk_len;
 
 
-short
+static short
 GetLittleShort(void)
 {
     short val = 0;
@@ -180,7 +187,7 @@ GetLittleShort(void)
     return val;
 }
 
-int
+static int
 GetLittleLong(void)
 {
     int val = 0;
@@ -193,8 +200,8 @@ GetLittleLong(void)
     return val;
 }
 
-void
-FindNextChunk(char *name)
+static void
+FindNextChunk(const char *name, const char *filename)
 {
     while (1) {
 	/* Need at least 8 bytes for a chunk */
@@ -206,28 +213,23 @@ FindNextChunk(char *name)
 	data_p = last_chunk + 4;
 	iff_chunk_len = GetLittleLong();
 	if (iff_chunk_len < 0 || iff_chunk_len > iff_end - data_p) {
-	    Con_DPrintf("Bad \"%s\" chunk length (%d) in wav file\n",
-			name, iff_chunk_len);
+	    Con_DPrintf("Bad \"%s\" chunk length (%d) in wav file %s\n",
+			name, iff_chunk_len, filename);
 	    data_p = NULL;
 	    return;
 	}
-#if 0
-	if (iff_chunk_len > 1024*1024)
-	    Sys_Error ("%s: %i length is past the 1 meg sanity limit",
-		       __func__, iff_chunk_len);
-#endif
 	last_chunk = data_p + ((iff_chunk_len + 1) & ~1);
 	data_p -= 8;
-	if (!strncmp((char *)data_p, name, 4))
+	if (!strncmp((const char *)data_p, name, 4))
 	    return;
     }
 }
 
-void
-FindChunk(char *name)
+static void
+FindChunk(const char *name, const char *filename)
 {
     last_chunk = iff_data;
-    FindNextChunk(name);
+    FindNextChunk(name, filename);
 }
 
 #if 0
@@ -253,10 +255,10 @@ DumpChunks(void)
 GetWavinfo
 ============
 */
-wavinfo_t
-GetWavinfo(char *name, byte *wav, int wavlength)
+static wavinfo_t *
+GetWavinfo(const char *name, const byte *wav, int wavlength)
 {
-    wavinfo_t info;
+    static wavinfo_t info;
     int i;
     int format;
     int samples;
@@ -264,31 +266,31 @@ GetWavinfo(char *name, byte *wav, int wavlength)
     memset(&info, 0, sizeof(info));
 
     if (!wav)
-	return info;
+	return &info;
 
     iff_data = wav;
     iff_end = wav + wavlength;
 
 // find "RIFF" chunk
-    FindChunk("RIFF");
+    FindChunk("RIFF", name);
     if (!(data_p && !strncmp((char *)data_p + 8, "WAVE", 4))) {
 	Con_Printf("Missing RIFF/WAVE chunks\n");
-	return info;
+	return &info;
     }
 // get "fmt " chunk
     iff_data = data_p + 12;
 // DumpChunks ();
 
-    FindChunk("fmt ");
+    FindChunk("fmt ", name);
     if (!data_p) {
 	Con_Printf("Missing fmt chunk\n");
-	return info;
+	return &info;
     }
     data_p += 8;
     format = GetLittleShort();
     if (format != 1) {
 	Con_Printf("Microsoft PCM format only\n");
-	return info;
+	return &info;
     }
 
     info.channels = GetLittleShort();
@@ -297,31 +299,29 @@ GetWavinfo(char *name, byte *wav, int wavlength)
     info.width = GetLittleShort() / 8;
 
 // get cue chunk
-    FindChunk("cue ");
+    FindChunk("cue ", name);
     if (data_p) {
 	data_p += 32;
 	info.loopstart = GetLittleLong();
-//              Con_Printf("loopstart=%d\n", sfx->loopstart);
 
 	// if the next chunk is a LIST chunk, look for a cue length marker
-	FindNextChunk("LIST");
+	FindNextChunk("LIST", name);
 	if (data_p) {
 	    /* this is not a proper parse, but it works with cooledit... */
 	    if (!strncmp((char *)data_p + 28, "mark", 4)) {
 		data_p += 24;
 		i = GetLittleLong();	// samples in loop
 		info.samples = info.loopstart + i;
-//                              Con_Printf("looped length: %i\n", i);
 	    }
 	}
     } else
 	info.loopstart = -1;
 
 // find data chunk
-    FindChunk("data");
+    FindChunk("data", name);
     if (!data_p) {
 	Con_Printf("Missing data chunk\n");
-	return info;
+	return &info;
     }
 
     data_p += 4;
@@ -335,5 +335,5 @@ GetWavinfo(char *name, byte *wav, int wavlength)
 
     info.dataofs = data_p - wav;
 
-    return info;
+    return &info;
 }

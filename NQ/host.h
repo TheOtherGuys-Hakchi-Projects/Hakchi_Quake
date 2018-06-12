@@ -20,10 +20,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef HOST_H
 #define HOST_H
 
-#include "qtypes.h"		/* qboolean     */
-#include "quakedef.h"		/* quakeparms_t */
+#include "qtypes.h"
+#include "quakedef.h"
+#include "server.h"
+#include "wad.h"
 
 // FIXME - some of this is out of place or badly named...
+
+extern wad_t host_gfx; /* "gfx.wad" */
 
 extern quakeparms_t host_parms;
 
@@ -51,8 +55,8 @@ void Host_EndGame(const char *message, ...)
     __attribute__((noreturn, format(printf,1,2)));
 void Host_Frame(float time);
 void Host_Quit_f(void);
-void Host_ClientCommands(const char *fmt, ...)
-    __attribute__((format(printf,1,2)));
+void Host_ClientCommands(client_t *client, const char *fmt, ...)
+    __attribute__((format(printf,2,3)));
 void Host_ShutdownServer(qboolean crash);
 
 extern qboolean msg_suppress_1;	// suppresses resolution and cache size console

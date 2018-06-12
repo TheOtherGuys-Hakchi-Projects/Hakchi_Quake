@@ -37,9 +37,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * especially when crossing a water boudnary.
  */
 
-cvar_t lcd_x = { "lcd_x", "0" };
-cvar_t lcd_yaw = { "lcd_yaw", "0" };
-
 cvar_t scr_ofsx = { "scr_ofsx", "0", false };
 cvar_t scr_ofsy = { "scr_ofsy", "0", false };
 cvar_t scr_ofsz = { "scr_ofsz", "0", false };
@@ -69,7 +66,9 @@ cvar_t crosshaircolor = { "crosshaircolor", "79", true };
 cvar_t cl_crossx = { "cl_crossx", "0", false };
 cvar_t cl_crossy = { "cl_crossy", "0", false };
 
+#ifdef GLQUAKE
 cvar_t gl_cshiftpercent = { "gl_cshiftpercent", "100", false };
+#endif
 
 float v_dmg_time, v_dmg_roll, v_dmg_pitch;
 
@@ -209,9 +208,10 @@ V_DriftPitch(void)
 	else
 	    cl.driftmove += host_frametime;
 
-	if (cl.driftmove > v_centermove.value) {
-	    V_StartPitchDrift();
-	}
+	if (cl.driftmove > v_centermove.value)
+	    if (lookspring.value)
+		V_StartPitchDrift();
+
 	return;
     }
 
@@ -224,8 +224,6 @@ V_DriftPitch(void)
 
     move = host_frametime * cl.pitchvel;
     cl.pitchvel += host_frametime * v_centerspeed.value;
-
-//Con_Printf ("move: %f (%f)\n", move, host_frametime);
 
     if (delta > 0) {
 	if (move > delta) {
@@ -324,7 +322,7 @@ V_ParseDamage(void)
     vec3_t from;
     int i;
     vec3_t forward, right, up;
-    entity_t *ent;
+    const entity_t *ent;
     float side;
     float count;
 
@@ -444,22 +442,22 @@ V_CalcPowerupCshift
 void
 V_CalcPowerupCshift(void)
 {
-    if (cl.items & IT_QUAD) {
+    if (cl.stats[STAT_ITEMS] & IT_QUAD) {
 	cl.cshifts[CSHIFT_POWERUP].destcolor[0] = 0;
 	cl.cshifts[CSHIFT_POWERUP].destcolor[1] = 0;
 	cl.cshifts[CSHIFT_POWERUP].destcolor[2] = 255;
 	cl.cshifts[CSHIFT_POWERUP].percent = 30;
-    } else if (cl.items & IT_SUIT) {
+    } else if (cl.stats[STAT_ITEMS] & IT_SUIT) {
 	cl.cshifts[CSHIFT_POWERUP].destcolor[0] = 0;
 	cl.cshifts[CSHIFT_POWERUP].destcolor[1] = 255;
 	cl.cshifts[CSHIFT_POWERUP].destcolor[2] = 0;
 	cl.cshifts[CSHIFT_POWERUP].percent = 20;
-    } else if (cl.items & IT_INVISIBILITY) {
+    } else if (cl.stats[STAT_ITEMS] & IT_INVISIBILITY) {
 	cl.cshifts[CSHIFT_POWERUP].destcolor[0] = 100;
 	cl.cshifts[CSHIFT_POWERUP].destcolor[1] = 100;
 	cl.cshifts[CSHIFT_POWERUP].destcolor[2] = 100;
 	cl.cshifts[CSHIFT_POWERUP].percent = 100;
-    } else if (cl.items & IT_INVULNERABILITY) {
+    } else if (cl.stats[STAT_ITEMS] & IT_INVULNERABILITY) {
 	cl.cshifts[CSHIFT_POWERUP].destcolor[0] = 255;
 	cl.cshifts[CSHIFT_POWERUP].destcolor[1] = 255;
 	cl.cshifts[CSHIFT_POWERUP].destcolor[2] = 0;
@@ -613,7 +611,6 @@ V_UpdatePalette(void)
 }
 #endif // !GLQUAKE
 
-
 /*
 ==============================================================================
 
@@ -626,7 +623,7 @@ float
 angledelta(float a)
 {
     a = anglemod(a);
-    if (a > 180)
+    if (a >= 180)
 	a -= 360;
     return a;
 }
@@ -698,7 +695,7 @@ V_BoundOffsets
 void
 V_BoundOffsets(void)
 {
-    entity_t *ent;
+    const entity_t *ent;
 
     ent = &cl_entities[cl.viewentity];
 
@@ -793,7 +790,7 @@ V_CalcIntermissionRefdef(void)
     VectorCopy(ent->angles, r_refdef.viewangles);
     view->model = NULL;
 
-// allways idle in intermission
+// always idle in intermission
     old = v_idlescale.value;
     v_idlescale.value = 1;
     V_AddIdle();
@@ -879,20 +876,14 @@ V_CalcRefdef(void)
 
 // fudge position around to keep amount of weapon visible
 // roughly equal with different FOV
-
-#if 0
-    if (cl.model_precache[cl.stats[STAT_WEAPON]]
-	&& strcmp(cl.model_precache[cl.stats[STAT_WEAPON]]->name,
-		  "progs/v_shot2.mdl"))
-#endif
-	if (scr_viewsize.value == 110)
-	    view->origin[2] += 1;
-	else if (scr_viewsize.value == 100)
-	    view->origin[2] += 2;
-	else if (scr_viewsize.value == 90)
-	    view->origin[2] += 1;
-	else if (scr_viewsize.value == 80)
-	    view->origin[2] += 0.5;
+    if (scr_viewsize.value == 110)
+	view->origin[2] += 1;
+    else if (scr_viewsize.value == 100)
+	view->origin[2] += 2;
+    else if (scr_viewsize.value == 90)
+	view->origin[2] += 1;
+    else if (scr_viewsize.value == 80)
+	view->origin[2] += 0.5;
 
     view->model = cl.model_precache[cl.stats[STAT_WEAPON]];
     view->frame = cl.stats[STAT_WEAPONFRAME];
@@ -953,39 +944,7 @@ V_RenderView(void)
     }
 
     R_PushDlights();
-
-    if (lcd_x.value) {
-	//
-	// render two interleaved views
-	//
-	int i;
-
-	vid.rowbytes <<= 1;
-	vid.aspect *= 0.5;
-
-	r_refdef.viewangles[YAW] -= lcd_yaw.value;
-	for (i = 0; i < 3; i++)
-	    r_refdef.vieworg[i] -= right[i] * lcd_x.value;
-	R_RenderView();
-
-	vid.buffer += vid.rowbytes >> 1;
-
-	R_PushDlights();
-
-	r_refdef.viewangles[YAW] += lcd_yaw.value * 2;
-	for (i = 0; i < 3; i++)
-	    r_refdef.vieworg[i] += 2 * right[i] * lcd_x.value;
-	R_RenderView();
-
-	vid.buffer -= vid.rowbytes >> 1;
-
-	r_refdef.vrect.height <<= 1;
-
-	vid.rowbytes >>= 1;
-	vid.aspect *= 2;
-    } else {
-	R_RenderView();
-    }
+    R_RenderView();
 
 #ifndef GLQUAKE
     if (crosshair.value)
@@ -1008,9 +967,6 @@ V_Init(void)
     Cmd_AddCommand("bf", V_BonusFlash_f);
     Cmd_AddCommand("centerview", V_StartPitchDrift);
 
-    Cvar_RegisterVariable(&lcd_x);
-    Cvar_RegisterVariable(&lcd_yaw);
-
     Cvar_RegisterVariable(&v_centermove);
     Cvar_RegisterVariable(&v_centerspeed);
 
@@ -1026,7 +982,9 @@ V_Init(void)
     Cvar_RegisterVariable(&crosshaircolor);
     Cvar_RegisterVariable(&cl_crossx);
     Cvar_RegisterVariable(&cl_crossy);
+#ifdef GLQUAKE
     Cvar_RegisterVariable(&gl_cshiftpercent);
+#endif
 
     Cvar_RegisterVariable(&scr_ofsx);
     Cvar_RegisterVariable(&scr_ofsy);

@@ -21,11 +21,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef CLIENT_H
 #define CLIENT_H
 
+#include "model.h"
 #include "net.h"
+#include "pmove.h"
 #include "protocol.h"
 #include "render.h"
 #include "sound.h"
 #include "vid.h"
+#include "wad.h"
 #include "zone.h"
 
 //
@@ -75,8 +78,8 @@ typedef struct {
 
     int flags;			// dead, gib, etc
 
+    qboolean onground;
     float waterjumptime;
-    int onground;		// -1 = in air, else pmove entity number
     int oldbuttons;
 } player_state_t;
 
@@ -94,11 +97,10 @@ typedef struct player_info_s {
     byte pl;
 
     // skin information
-    int topcolor;
-    int bottomcolor;
-
-    int _topcolor;
-    int _bottomcolor;
+    byte topcolor;
+    byte bottomcolor;
+    byte _topcolor;
+    byte _bottomcolor;
 
     int spectator;
     byte translations[VID_GRADES * 256];
@@ -241,7 +243,7 @@ typedef struct {
 
 // the client simulates or interpolates movement to get these values
     double time;		// this is the time value that the client
-    // is rendering at.  allways <= realtime
+				// is rendering at.  always <= realtime
     vec3_t simorg;
     vec3_t simvel;
     vec3_t simangles;
@@ -268,15 +270,15 @@ typedef struct {
     char model_name[MAX_MODELS][MAX_QPATH];
     char sound_name[MAX_SOUNDS][MAX_QPATH];
 
-    struct model_s *model_precache[MAX_MODELS];
-    struct sfx_s *sound_precache[MAX_SOUNDS];
+    model_t *model_precache[MAX_MODELS];
+    sfx_t *sound_precache[MAX_SOUNDS];
 
     char levelname[40];		// for display on solo scoreboard
     int playernum;
 
 // refresh related state
-    struct model_s *worldmodel;	// cl_entitites[0].model
-    struct efrag_s *free_efrags;
+    brushmodel_t *worldmodel;	// cl_entitites[0].model
+    efrag_t *free_efrags;
     int num_entities;		// stored bottom up in cl_entities array
     int num_statics;		// stored top down in cl_entitiers
 
@@ -305,6 +307,8 @@ extern cvar_t cl_pitchspeed;
 
 extern cvar_t cl_anglespeedkey;
 
+extern cvar_t cl_run;
+
 extern cvar_t cl_shownet;
 extern cvar_t cl_sbar;
 extern cvar_t cl_hudswap;
@@ -319,6 +323,8 @@ extern cvar_t m_yaw;
 extern cvar_t m_forward;
 extern cvar_t m_side;
 
+extern cvar_t m_freelook;
+
 extern cvar_t name;
 
 extern cvar_t cl_predict_players;
@@ -328,9 +334,6 @@ extern cvar_t cl_solid_players;
 extern int cl_spikeindex, cl_playerindex, cl_flagindex;
 extern int parsecountmod;
 extern double parsecounttime;
-
-extern vec3_t player_mins;
-extern vec3_t player_maxs;
 
 entity_t *CL_NewTempEntity(void);
 
@@ -345,15 +348,14 @@ extern entity_t cl_static_entities[MAX_STATIC_ENTITIES];
 extern lightstyle_t cl_lightstyle[MAX_LIGHTSTYLES];
 extern dlight_t cl_dlights[MAX_DLIGHTS];
 
-extern qboolean nomaster;
-extern float server_version;	// version of server we connected to
-
 //=============================================================================
 
 
 //
 // cl_main
 //
+extern wad_t host_gfx; /* "gfx.wad" */
+
 dlight_t *CL_AllocDlight(int key);
 
 /* The standard dynamic light colors */
@@ -381,15 +383,8 @@ qboolean CL_DemoBehind(void);
 void CL_BeginServerConnect(void);
 
 #define MAX_VISEDICTS 256
-extern int cl_numvisedicts, cl_oldnumvisedicts;
-extern entity_t *cl_visedicts, *cl_oldvisedicts;
-extern entity_t cl_visedicts_list[2][MAX_VISEDICTS];
-
-extern char emodel_name[];
-extern char pmodel_name[];
-extern char prespawn_name[];
-extern char modellist_name[];
-extern char soundlist_name[];
+extern int cl_numvisedicts;
+extern entity_t cl_visedicts[];
 
 extern int fps_count;
 extern int minimum_memory;
@@ -407,7 +402,7 @@ extern kbutton_t in_strafe;
 extern kbutton_t in_speed;
 
 void CL_InitInput(void);
-void CL_SendCmd(void);
+void CL_SendCmd(const physent_stack_t *pestack);
 void CL_SendMove(usercmd_t *cmd);
 
 void CL_ParseTEnt(void);
@@ -415,14 +410,9 @@ void CL_UpdateTEnts(void);
 
 void CL_ClearState(void);
 
-void CL_ReadPackets(void);
-
 int CL_ReadFromServer(void);
 void CL_WriteToServer(usercmd_t *cmd);
 void CL_BaseMove(usercmd_t *cmd);
-
-
-char *Key_KeynumToString(int keynum);
 
 //
 // cl_demo.c
@@ -475,22 +465,23 @@ void CL_ClearTEnts(void);
 //
 // cl_ents.c
 //
-void CL_SetSolidPlayers(int playernum);
-void CL_SetUpPlayerPrediction(qboolean dopred);
-void CL_EmitEntities(void);
+void CL_SetSolidPlayers(physent_stack_t *pestack, int playernum);
+void CL_SetUpPlayerPrediction(const physent_stack_t *pestack, qboolean dopred);
+void CL_EmitEntities(physent_stack_t *pestack);
 void CL_ClearProjectiles(void);
 void CL_ParseProjectiles(void);
 void CL_ParsePacketEntities(qboolean delta);
-void CL_SetSolidEntities(void);
+void CL_SetSolidEntities(physent_stack_t *pestack);
 void CL_ParsePlayerinfo(void);
 
 //
 // cl_pred.c
 //
 void CL_InitPrediction(void);
-void CL_PredictMove(void);
-void CL_PredictUsercmd(player_state_t * from, player_state_t * to,
-		       usercmd_t *u, qboolean spectator);
+void CL_PredictMove(physent_stack_t *pestack);
+void CL_PredictUsercmd(const player_state_t *from, player_state_t *to,
+		       const usercmd_t *cmd, const physent_stack_t *pestack,
+		       qboolean spectator);
 
 //
 // cl_cam.c
@@ -503,7 +494,7 @@ extern int spec_track;		// player# of who we are tracking
 
 qboolean Cam_DrawViewModel(void);
 qboolean Cam_DrawPlayer(int playernum);
-void Cam_Track(usercmd_t *cmd);
+void Cam_Track(usercmd_t *cmd, const physent_stack_t *pestack);
 void Cam_FinishMove(usercmd_t *cmd);
 void Cam_Reset(void);
 void CL_InitCam(void);

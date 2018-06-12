@@ -19,34 +19,35 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 // cl_tent.c -- client side temporary entities
 
-#include "quakedef.h"
 #include "client.h"
-#include "sound.h"
-#include "protocol.h"
 #include "console.h"
+#include "model.h"
+#include "protocol.h"
+#include "quakedef.h"
+#include "sound.h"
 #include "sys.h"
 
-#ifdef GLQUAKE
-# include "gl_model.h"
-#else
-# include "model.h"
-#endif
+#define	MAX_BEAMS	24
+typedef struct {
+    int entity;
+    struct model_s *model;
+    float endtime;
+    vec3_t start, end;
+} beam_t;
 
-int num_temp_entities;
-entity_t cl_temp_entities[MAX_TEMP_ENTITIES];
-beam_t cl_beams[MAX_BEAMS];
+static beam_t cl_beams[MAX_BEAMS];
 
-sfx_t *cl_sfx_wizhit;
-sfx_t *cl_sfx_knighthit;
-sfx_t *cl_sfx_tink1;
-sfx_t *cl_sfx_ric1;
-sfx_t *cl_sfx_ric2;
-sfx_t *cl_sfx_ric3;
-sfx_t *cl_sfx_r_exp3;
+static sfx_t *cl_sfx_wizhit;
+static sfx_t *cl_sfx_knighthit;
+static sfx_t *cl_sfx_tink1;
+static sfx_t *cl_sfx_ric1;
+static sfx_t *cl_sfx_ric2;
+static sfx_t *cl_sfx_ric3;
+static sfx_t *cl_sfx_r_exp3;
 
 /*
 =================
-CL_ParseTEnt
+CL_InitTEnts
 =================
 */
 void
@@ -63,10 +64,21 @@ CL_InitTEnts(void)
 
 /*
 =================
-CL_ParseBeam
+CL_ClearTEnts
 =================
 */
 void
+CL_ClearTEnts(void)
+{
+    memset(&cl_beams, 0, sizeof(cl_beams));
+}
+
+/*
+=================
+CL_ParseBeam
+=================
+*/
+static void
 CL_ParseBeam(model_t *m)
 {
     int ent;
@@ -266,20 +278,18 @@ CL_ParseTEnt(void)
 CL_NewTempEntity
 =================
 */
-entity_t *
+static entity_t *
 CL_NewTempEntity(void)
 {
     entity_t *ent;
 
     if (cl_numvisedicts == MAX_VISEDICTS)
 	return NULL;
-    if (num_temp_entities == MAX_TEMP_ENTITIES)
-	return NULL;
-    ent = &cl_temp_entities[num_temp_entities];
-    memset(ent, 0, sizeof(*ent));
-    num_temp_entities++;
-    cl_visedicts[cl_numvisedicts] = ent;
+
+    ent = &cl_visedicts[cl_numvisedicts];
     cl_numvisedicts++;
+
+    memset(ent, 0, sizeof(*ent));
 
     ent->colormap = vid.colormap;
     return ent;
@@ -301,8 +311,6 @@ CL_UpdateTEnts(void)
     entity_t *ent;
     float yaw, pitch;
     float forward;
-
-    num_temp_entities = 0;
 
 // update lightning
     for (i = 0, b = cl_beams; i < MAX_BEAMS; i++, b++) {
@@ -340,16 +348,26 @@ CL_UpdateTEnts(void)
 	    ent = CL_NewTempEntity();
 	    if (!ent)
 		return;
+
 	    VectorCopy(org, ent->origin);
 	    ent->model = b->model;
 	    ent->angles[0] = pitch;
 	    ent->angles[1] = yaw;
 	    ent->angles[2] = rand() % 360;
 
-	    for (i = 0; i < 3; i++)
-		org[i] += dist[i] * 30;
+	    VectorMA(org, 30, dist, org);
 	    d -= 30;
+
+	    /* Initilise model lerp info */
+	    ent->frame = 0;
+	    ent->currentframe = 0;
+	    ent->previousframe = 0;
+	    ent->currentframetime = cl.time;
+	    ent->previousframetime = cl.time;
+	    VectorCopy(ent->origin, ent->currentorigin);
+	    VectorCopy(ent->origin, ent->previousorigin);
+	    ent->currentorigintime = cl.time;
+	    ent->previousorigintime = cl.time;
 	}
     }
-
 }
